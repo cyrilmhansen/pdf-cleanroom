@@ -16,7 +16,6 @@
 /// ```
 ///
 /// Normal `cargo test` never depends on external tools.
-
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -45,9 +44,13 @@ fn find_renderer() -> Option<String> {
 
 /// Assert that a path is a valid PDF (loadable by lopdf) and has non-zero size.
 fn assert_valid_pdf(path: &std::path::Path) {
-    let metadata = std::fs::metadata(path)
-        .unwrap_or_else(|e| panic!("failed to stat {path:?}: {e}"));
-    assert!(metadata.len() > 100, "PDF too small: {} bytes", metadata.len());
+    let metadata =
+        std::fs::metadata(path).unwrap_or_else(|e| panic!("failed to stat {path:?}: {e}"));
+    assert!(
+        metadata.len() > 100,
+        "PDF too small: {} bytes",
+        metadata.len()
+    );
 
     // Verify it loads with lopdf
     let result = lopdf::Document::load(path);
@@ -58,29 +61,40 @@ fn assert_valid_pdf(path: &std::path::Path) {
     );
 }
 
-/// Assert that normal text extraction finds zero secrets in a PDF byte slice.
-fn assert_normal_scan_finds_nothing(pdf_bytes: &[u8], label: &str) {
+/// Assert that normal text extraction finds no text in a PDF byte slice.
+fn assert_no_extractable_text(pdf_bytes: &[u8], label: &str) {
     use pdf_cleanroom::pdf_extract::extract_bytes;
     match extract_bytes(pdf_bytes) {
         Ok(content) => {
             let text: String = content.pages.into_iter().map(|p| p.text).collect();
-            if !text.trim().is_empty() {
-                let detector = pdf_cleanroom::detect::Detector::new();
-                let detections = detector.scan_text(&text);
-                assert!(
-                    detections.is_empty(),
-                    "[{label}] normal text extraction should find zero secrets, \
-                     but found {}: {:?}\nExtracted text: {text}",
-                    detections.len(),
-                    detections,
-                );
-            }
+            assert!(
+                text.trim().is_empty(),
+                "[{label}] normal text extraction should return no text for image-only PDF, \
+                 but extracted: {text:?}",
+            );
         }
         Err(e) => {
             // Image-only PDF may fail extraction entirely (lopdf may return
             // an error for pages with no text content)—that's expected.
             eprintln!("[{label}] normal text extraction failed (expected for image-only PDF): {e}");
         }
+    }
+}
+
+/// Assert that obvious source secret bytes were not copied into the output PDF.
+fn assert_no_source_secret_bytes(pdf_bytes: &[u8]) {
+    for secret in [
+        pdf_fixtures::SECRET_EMAIL,
+        pdf_fixtures::SECRET_PHONE,
+        pdf_fixtures::SECRET_PHONE_COMPACT,
+        pdf_fixtures::SECRET_IBAN,
+    ] {
+        assert!(
+            !pdf_bytes
+                .windows(secret.len())
+                .any(|window| window == secret.as_bytes()),
+            "flattened PDF should not contain source secret bytes: {secret}",
+        );
     }
 }
 
@@ -105,8 +119,7 @@ fn flatten_visible_text_pdf() {
     };
 
     let out_dir = PathBuf::from("target/pdf-cleanroom-flatten-test");
-    std::fs::create_dir_all(&out_dir)
-        .expect("failed to create target/pdf-cleanroom-flatten-test/");
+    std::fs::create_dir_all(&out_dir).expect("failed to create target/pdf-cleanroom-flatten-test/");
 
     // Generate source PDF with known secrets
     let src_pdf = out_dir.join("source.pdf");
@@ -132,8 +145,8 @@ fn flatten_visible_text_pdf() {
     assert!(output_pdf.exists(), "output PDF should exist");
     assert_valid_pdf(&output_pdf);
 
-    let flattened_bytes = std::fs::read(&output_pdf)
-        .unwrap_or_else(|e| panic!("failed to read flattened PDF: {e}"));
+    let flattened_bytes =
+        std::fs::read(&output_pdf).unwrap_or_else(|e| panic!("failed to read flattened PDF: {e}"));
 
     eprintln!(
         "flatten-raster test: {} → {} ({:.1} KB → {:.1} KB, renderer={})",
@@ -144,8 +157,11 @@ fn flatten_visible_text_pdf() {
         renderer,
     );
 
-    // Normal text extraction must find zero secrets (image-only PDF)
-    assert_normal_scan_finds_nothing(&flattened_bytes, "flattened");
+    // Normal text extraction must return no text (image-only PDF)
+    assert_no_extractable_text(&flattened_bytes, "flattened");
+
+    // Obvious source secret bytes must not be copied into the rebuilt PDF.
+    assert_no_source_secret_bytes(&flattened_bytes);
 
     // Structural check via lopdf: no Font objects, image XObject present
     let doc = lopdf::Document::load(&output_pdf).expect("flattened PDF should load with lopdf");
@@ -174,7 +190,9 @@ fn flatten_visible_text_pdf() {
         "flattened PDF should contain at least one /Image XObject"
     );
 
-    eprintln!("  structural checks passed: no /Font objects, /Image XObject present.");
+    eprintln!(
+        "  structural checks passed: no extractable text, no source secret bytes, no /Font objects, /Image XObject present."
+    );
 
     // Clean up
     std::fs::remove_dir_all(&out_dir).ok();
