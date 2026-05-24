@@ -26,12 +26,23 @@ Extraire le texte visible d'un PDF, détecter les secrets (email, téléphone FR
 ## Stratégies de sortie
 L'utilisateur choisit une stratégie via `--strategy` :
 
-- `text-only` (défaut) : reconstruit un PDF neuf à partir du seul texte visible extrait. Les images, annotations, formulaires et métadonnées source ne sont pas copiés. C'est le comportement MVP.
-- `flatten-raster` (expérimental) : rend chaque page en image raster (PPM) via un renderer externe (pdftoppm/mutool/gs), puis reconstruit un PDF image-only. Préserve l'apparence visuelle, supprime le texte sélectionnable. Les secrets visibles dans l'image restent VISIBLES — pas de masquage pixel.
-- `flatten-visible` : destiné à préserver le contenu visible utile (images, mise en page) à l'avenir. Actuellement partiel — les images ne sont pas encore sanitisées. Un avertissement est émis à l'utilisation.
-- `preserve` (non implémenté) : refus explicite — ne sera jamais simulé par superposition de rectangles.
+- `text-only` (défaut) : reconstruit un PDF neuf à partir du seul texte visible extrait. Pour archivage texte propre et ingestion IA ; pas pour fidélité visuelle.
+- `flatten-raster` (expérimental) : rend chaque page en image raster (PPM) via un renderer externe (pdftoppm/mutool/gs), puis reconstruit un PDF image-only. Préserve l'apparence visuelle, supprime le texte sélectionnable. Les secrets visibles restent visibles sans masquage pixel.
+- `layered-pdf` (futur) : sortie clean-room façon DjVu : image de page en arrière-plan, couche texte optionnelle dérivée d'extraction/OCR sanitisée pour recherche/sélection. Interdit de copier la couche texte ou les objets du PDF source.
+- `raster-redacted` (futur) : rend les pages, applique des masques pixels sur les régions secrètes, puis reconstruit un PDF image-only neuf. C'est la voie prioritaire pour la vraie rédaction visuelle.
+- `flatten-visible` : ancien nom expérimental partiel ; ne doit pas promettre la sanitisation des images.
+- `preserve` (non implémenté) : future rédaction destructive de la structure originale, non prioritaire, jamais simulée par superposition de rectangles.
 
-Quelle que soit la stratégie, le rebuilt crée toujours un document printpdf indépendant ; il ne copie jamais la structure source.
+Quelle que soit la stratégie, le rebuilt crée toujours un document indépendant ; il ne copie jamais la structure source.
+
+
+## Modèle raster-redacted minimal
+
+`MaskRegion { page, x, y, width, height, source, reason }` décrit un rectangle à noircir avant reconstruction PDF. Les coordonnées sont en points PDF, page 1-indexée, origine bas-gauche, `x` vers la droite et `y` vers le haut. La conversion vers pixels rendus applique `image_width / page_width` et `image_height / page_height`, puis inverse l'axe Y car l'image a une origine haut-gauche. Le premier backend est volontairement simple : rectangle noir, pas de flou, pas de style, pas de boîtes OCR automatiques.
+
+## layered-pdf futur
+
+Sortie clean-room recherchable : raster de page comme fond visuel, couche texte optionnelle uniquement dérivée d'une extraction sanitisée ou d'un OCR sanitisé. Aucun objet, police, annotation, métadonnée ou flux texte source n'est copié. Le modèle s'inspire de DjVu : séparation fond visuel, éventuels avant-plans/masques, et texte dérivé. Encodages réalistes aujourd'hui : PNG/JPEG/JPEG2000 selon support lecteur PDF ; JPEG XL seulement quand le support des lecteurs PDF sera réaliste.
 
 ## Architecture
 ```
@@ -71,7 +82,7 @@ Chaque rebuilt est vérifié : texte extrait exempt de secrets ; octets bruts ex
 - rebuilt produit PDF sans secrets.
 - --dry-run ne modifie rien, --unsafe-show-secrets contrôle l'affichage.
 - `flatten-raster` nécessite un renderer externe (pdftoppm/mutool/gs).
-- --strategy text-only (défaut) / flatten-raster (expérimental) / flatten-visible (expérimental, avertit).
+- --strategy text-only (défaut) / flatten-raster (expérimental) / flatten-visible (expérimental, avertit). `layered-pdf`, `raster-redacted` et `preserve` restent futurs.
 
 ## OCR et images
 - **OCR** : non implémenté par défaut. Architecture d'accueil définie dans `src/ocr.rs` avec trait `OcrEngine` et implémentation `NoopOcrEngine` (toujours indisponible). Le jour où un backend OCR est ajouté, il reste optionnel et limité à la détection.

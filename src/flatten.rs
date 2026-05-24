@@ -10,7 +10,16 @@
 /// - No selectable text (reduces exposure surface)
 /// - No source PDF objects copied (metadata, annotations, forms, JS, etc.)
 /// - Visual appearance preserved at the renderer's DPI (default 200)
-/// - Does **not** implement pixel masking — visible secrets remain in the image data
+/// - Optional internal pixel masks can black out rendered regions before PDF
+///   reconstruction; this is raster redaction, not PDF overlay redaction.
+///
+/// # Mask coordinates
+///
+/// `MaskRegion` rectangles use 1-indexed PDF page numbers and PDF user-space
+/// points. The origin is the page's bottom-left corner, `x` grows right, and
+/// `y` grows up. During raster redaction, rectangles are converted to rendered
+/// image pixels by scaling against the source page MediaBox and flipping the
+/// Y axis to the image's top-left origin. Regions are clipped to page bounds.
 ///
 /// # Limitations
 ///
@@ -20,16 +29,18 @@
 ///   from the rendered image dimensions at 200 DPI
 /// - Multi-byte text, unusual encodings, and transparency may not survive
 ///   rendering faithfully in all PDF viewers
-
 use std::fs;
 use std::io::BufWriter;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use lopdf::{dictionary, Document, Object, Stream};
+
+static FLATTEN_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Error type for flatten operations.
 #[derive(Debug)]
@@ -39,20 +50,36 @@ pub enum FlattenError {
     /// I/O error during rendering or file operations.
     Io(std::io::Error),
     /// The renderer process failed.
-    Render {
-        tool: String,
-        detail: String,
-    },
+    Render { tool: String, detail: String },
     /// PDF load or structure error.
-    Pdf {
-        detail: String,
-    },
+    Pdf { detail: String },
     /// PPM parsing error.
-    Parse {
-        detail: String,
-    },
+    Parse { detail: String },
     /// Source PDF has no pages.
     PageCount,
+}
+
+/// A rectangular region to black out on a rendered page before PDF rebuild.
+///
+/// Coordinates are intentionally simple for the raster-redaction foundation:
+/// - `page` is 1-indexed.
+/// - `x`, `y`, `width`, and `height` are PDF user-space points.
+/// - origin is the page's bottom-left corner (`x` right, `y` up).
+/// - conversion to pixels scales by rendered image size / page MediaBox size
+///   and flips Y into the raster image's top-left origin.
+///
+/// The `source` and `reason` fields are provenance only. Current masking does
+/// not interpret them; future detector/OCR pipelines can use them to explain
+/// how a region was derived.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaskRegion {
+    pub page: usize,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub source: String,
+    pub reason: String,
 }
 
 impl std::fmt::Display for FlattenError {
@@ -113,8 +140,6 @@ pub fn detect_renderer() -> Option<String> {
 /// * `input_path` — source PDF file path
 /// * `output_path` — destination image-only PDF file path
 /// * `renderer` — renderer name (`"pdftoppm"`, `"mutool"`, or `"gs"`)
-/// * `compression` — if true, FlateDecode-compress image streams (reduces
-///   output size but requires the `flate2` crate — currently a no-op)
 ///
 /// # Errors
 ///
@@ -126,11 +151,34 @@ pub fn flatten_pdf(
     output_path: &str,
     renderer: &str,
 ) -> Result<(), FlattenError> {
+    flatten_pdf_impl(input_path, output_path, renderer, &[])
+}
+
+/// Flatten a PDF with manual raster masks applied before PDF reconstruction.
+///
+/// This is intentionally not wired to a production CLI yet. It exists as the
+/// minimal foundation for real visual redaction: render pages, mutate pixels,
+/// then build a fresh image-only PDF. It never overlays rectangles on the
+/// source PDF and never copies source PDF text or objects.
+pub fn flatten_pdf_with_masks(
+    input_path: &str,
+    output_path: &str,
+    renderer: &str,
+    masks: &[MaskRegion],
+) -> Result<(), FlattenError> {
+    flatten_pdf_impl(input_path, output_path, renderer, masks)
+}
+
+fn flatten_pdf_impl(
+    input_path: &str,
+    output_path: &str,
+    renderer: &str,
+    masks: &[MaskRegion],
+) -> Result<(), FlattenError> {
     // 1. Load source PDF to get page count and dimensions
-    let src_doc =
-        Document::load(input_path).map_err(|e| FlattenError::Pdf {
-            detail: format!("failed to load source PDF: {e}"),
-        })?;
+    let src_doc = Document::load(input_path).map_err(|e| FlattenError::Pdf {
+        detail: format!("failed to load source PDF: {e}"),
+    })?;
     let num_pages = src_doc.get_pages().len();
 
     if num_pages == 0 {
@@ -139,16 +187,26 @@ pub fn flatten_pdf(
 
     let page_dims = extract_page_dimensions(&src_doc, num_pages)?;
 
-    // 2. Create output directory for intermediate PPM files
-    let out_dir = PathBuf::from("target/pdf-cleanroom-flatten");
+    // 2. Create a unique output directory for intermediate PPM files. Tests may
+    // run flatten operations concurrently, so a shared directory is unsafe.
+    let out_dir = PathBuf::from("target/pdf-cleanroom-flatten").join(format!(
+        "{}-{}",
+        std::process::id(),
+        FLATTEN_TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
     fs::create_dir_all(&out_dir)?;
 
-    // 3. Render each page and collect image data
+    // 3. Render each page, apply raster masks, and collect image data
     let mut pages: Vec<(u32, u32, Vec<u8>)> = Vec::with_capacity(num_pages);
 
     for page_num in 1..=num_pages {
         let ppm_path = render_single_page(renderer, input_path, page_num, &out_dir)?;
-        let (w, h, data) = parse_ppm(&ppm_path)?;
+        let (w, h, mut data) = parse_ppm(&ppm_path)?;
+        let (page_w, page_h) = page_dims
+            .get(page_num - 1)
+            .copied()
+            .unwrap_or((w as f64 * 72.0 / 200.0, h as f64 * 72.0 / 200.0));
+        apply_masks_to_page(&mut data, w, h, page_w, page_h, page_num, masks);
         pages.push((w, h, data));
         // Clean up intermediate PPM
         fs::remove_file(&ppm_path).ok();
@@ -330,10 +388,9 @@ fn parse_ppm(path: &Path) -> Result<(u32, u32, Vec<u8>), FlattenError> {
             detail: "unexpected end of PPM dimensions line".into(),
         });
     }
-    let dim_line = std::str::from_utf8(&data[dim_start..pos])
-        .map_err(|_| FlattenError::Parse {
-            detail: "non-UTF-8 in PPM header".into(),
-        })?;
+    let dim_line = std::str::from_utf8(&data[dim_start..pos]).map_err(|_| FlattenError::Parse {
+        detail: "non-UTF-8 in PPM header".into(),
+    })?;
     let parts: Vec<&str> = dim_line.split_whitespace().collect();
     if parts.len() < 2 {
         return Err(FlattenError::Parse {
@@ -386,6 +443,68 @@ fn parse_ppm(path: &Path) -> Result<(u32, u32, Vec<u8>), FlattenError> {
     }
 
     Ok((w, h, data[pos..pos + expected_len].to_vec()))
+}
+
+/// Apply black rectangular masks to one rendered RGB page in-place.
+///
+/// `pixels` is row-major RGB (`width * height * 3`). The PDF coordinate
+/// system is bottom-left origin in points; the raster coordinate system is
+/// top-left origin in pixels.
+fn apply_masks_to_page(
+    pixels: &mut [u8],
+    image_width: u32,
+    image_height: u32,
+    page_width: f64,
+    page_height: f64,
+    page_num: usize,
+    masks: &[MaskRegion],
+) {
+    if image_width == 0 || image_height == 0 || page_width <= 0.0 || page_height <= 0.0 {
+        return;
+    }
+
+    let expected_len = image_width as usize * image_height as usize * 3;
+    if pixels.len() < expected_len {
+        return;
+    }
+
+    let scale_x = image_width as f64 / page_width;
+    let scale_y = image_height as f64 / page_height;
+
+    for mask in masks.iter().filter(|mask| mask.page == page_num) {
+        if mask.width <= 0.0 || mask.height <= 0.0 {
+            continue;
+        }
+
+        let x0 = (mask.x as f64 * scale_x).floor().max(0.0) as u32;
+        let x1 = ((mask.x + mask.width) as f64 * scale_x)
+            .ceil()
+            .clamp(0.0, image_width as f64) as u32;
+
+        // PDF y grows upward from bottom-left; image y grows downward from top-left.
+        let y0_pdf = mask.y as f64;
+        let y1_pdf = (mask.y + mask.height) as f64;
+        let y0 = ((page_height - y1_pdf) * scale_y)
+            .floor()
+            .clamp(0.0, image_height as f64) as u32;
+        let y1 = ((page_height - y0_pdf) * scale_y)
+            .ceil()
+            .clamp(0.0, image_height as f64) as u32;
+
+        if x0 >= x1 || y0 >= y1 {
+            continue;
+        }
+
+        for y in y0..y1 {
+            let row_start = y as usize * image_width as usize * 3;
+            for x in x0..x1 {
+                let offset = row_start + x as usize * 3;
+                pixels[offset] = 0;
+                pixels[offset + 1] = 0;
+                pixels[offset + 2] = 0;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -466,10 +585,8 @@ fn build_image_pdf(
         // Image XObject — compressed DeviceRGB pixels (FlateDecode)
         let compressed = {
             let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-            encoder.write_all(data)
-                .map_err(|e| FlattenError::Io(e))?;
-            encoder.finish()
-                .map_err(|e| FlattenError::Io(e))?
+            encoder.write_all(data).map_err(|e| FlattenError::Io(e))?;
+            encoder.finish().map_err(|e| FlattenError::Io(e))?
         };
         let image_id = doc.add_object(Stream::new(
             dictionary! {
@@ -492,10 +609,7 @@ fn build_image_pdf(
         });
 
         // Content stream — scale the image from unit square to fill page
-        let content = format!(
-            "q\n{:.2} 0 0 {:.2} 0 0 cm\n/Im0 Do\nQ\n",
-            page_w, page_h,
-        );
+        let content = format!("q\n{:.2} 0 0 {:.2} 0 0 cm\n/Im0 Do\nQ\n", page_w, page_h,);
         let content_id = doc.add_object(Stream::new(dictionary! {}, content.into_bytes()));
 
         // Page object
@@ -540,4 +654,54 @@ fn build_image_pdf(
         })?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rgb_at(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 3] {
+        let offset = (y as usize * width as usize + x as usize) * 3;
+        [pixels[offset], pixels[offset + 1], pixels[offset + 2]]
+    }
+
+    #[test]
+    fn mask_region_blacks_expected_pixels_with_y_axis_flip() {
+        let mut pixels = vec![255_u8; 10 * 10 * 3];
+        let masks = [MaskRegion {
+            page: 1,
+            x: 2.0,
+            y: 3.0,
+            width: 4.0,
+            height: 2.0,
+            source: "manual".to_string(),
+            reason: "unit-test".to_string(),
+        }];
+
+        apply_masks_to_page(&mut pixels, 10, 10, 10.0, 10.0, 1, &masks);
+
+        assert_eq!(rgb_at(&pixels, 10, 2, 5), [0, 0, 0]);
+        assert_eq!(rgb_at(&pixels, 10, 5, 6), [0, 0, 0]);
+        assert_eq!(rgb_at(&pixels, 10, 1, 5), [255, 255, 255]);
+        assert_eq!(rgb_at(&pixels, 10, 2, 4), [255, 255, 255]);
+        assert_eq!(rgb_at(&pixels, 10, 2, 7), [255, 255, 255]);
+    }
+
+    #[test]
+    fn mask_region_ignores_other_pages() {
+        let mut pixels = vec![255_u8; 4 * 4 * 3];
+        let masks = [MaskRegion {
+            page: 2,
+            x: 0.0,
+            y: 0.0,
+            width: 4.0,
+            height: 4.0,
+            source: "manual".to_string(),
+            reason: "unit-test".to_string(),
+        }];
+
+        apply_masks_to_page(&mut pixels, 4, 4, 4.0, 4.0, 1, &masks);
+
+        assert!(pixels.iter().all(|channel| *channel == 255));
+    }
 }

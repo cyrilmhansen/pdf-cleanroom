@@ -149,3 +149,10 @@
 - `tests/integration_flatten.rs` : test optionnel (PDF_CLEANROOM_FLATTEN_TESTS=1).
 - Norme `cargo test` : 68 tests passent (0 régression, 1 ignoré visuel).
 - README.md et DESIGN.md mis à jour.
+
+### 2026-05-24 — Raster redaction foundation
+
+- Ajout de `flatten::MaskRegion { page, x, y, width, height, source, reason }` en points PDF (origine bas-gauche), converti vers pixels rendus (origine haut-gauche) avant reconstruction.
+- Ajout de `flatten_pdf_with_masks()` interne/test-only : rendu page→PPM, rectangles noirs appliqués aux pixels RGB, puis reconstruction PDF image-only neuve. Aucun rectangle n'est superposé au PDF source.
+- Tests : mutation pixel exacte en unité ; intégration optionnelle flatten-raster avec masque manuel, PDF valide, image XObject, aucune couche texte extractible, aucun secret source brut.
+- Documentation : stratégie `raster-redacted` future, `layered-pdf` façon DjVu clean-room, benchmarks redaction-aware (zones masquées séparées, MAE/SSIM/OCR anchor recall/secret OCR hits).

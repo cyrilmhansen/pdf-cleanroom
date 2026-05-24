@@ -194,7 +194,10 @@ layer was preserved. Use structural tools such as `pdftotext`, `qpdf`, and
 
 **Important caveats:**
 - Selectable text is removed — the output contains only raster images.
-- Visible secrets in the rendered images are **NOT masked**.
+- Visible secrets in the rendered images remain visible unless pixel masks are
+  applied before PDF reconstruction.
+- Raster masking is the planned path toward real visual redaction for flattened
+  pages: mutate pixels first, then rebuild a fresh image-only PDF.
 - Requires an external PDF renderer: `pdftoppm` (poppler-utils), `mutool`
   (mupdf-tools), or `gs` (ghostscript).
 - Without a renderer, the command fails with a clear error message.
@@ -231,17 +234,28 @@ Generates a synthetic PDF with known secrets, flattens it, and verifies:
 - Normal text extraction returns no text (image-only)
 - Output contains at least one image XObject and no Font objects
 - Obvious source secret bytes are not copied into the output PDF
+- Manual raster masks can be applied internally before image-only PDF rebuild
 - No mandatory dependencies added — normal `cargo test` is unaffected
 
 ### Limitations
 
-- **No pixel masking.** Secrets visible in the rendered image remain
-  visible. This strategy is a visual-flattening pass, not a redaction tool.
-- **No OCR.** The output has no hidden text layer.
+- **Visible pixels remain unless masked.** `flatten-raster` alone is a
+  visual-flattening pass, not redaction. Real visual redaction starts when
+  raster mask regions black out pixels before the fresh PDF is built.
+- **No OCR or hidden text layer.** The output has no hidden text layer.
 - **Renderer quality.** Visual fidelity depends on the external renderer's
   DPI and capabilities. 200 DPI is the default.
 - **Page dimensions.** Output page dimensions approximate the source via
   MediaBox extraction or image dimensions at render DPI.
+
+
+### Future output families
+
+- `layered-pdf`: future searchable visual output with a page image background
+  and an optional sanitized derived text layer. It must not copy the source PDF
+  text layer or source objects.
+- `raster-redacted`: future image-only output where detected or manual mask
+  regions are applied to rendered page pixels before reconstruction.
 
 See [DESIGN.md](DESIGN.md) and [BENCHMARKS.md](BENCHMARKS.md) for the
 longer-term strategy around visual fidelity measurement and OCR integration.

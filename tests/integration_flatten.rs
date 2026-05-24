@@ -98,6 +98,34 @@ fn assert_no_source_secret_bytes(pdf_bytes: &[u8]) {
     }
 }
 
+fn assert_image_only_structure(path: &std::path::Path) {
+    let doc = lopdf::Document::load(path).expect("flattened PDF should load with lopdf");
+
+    let has_font_object = doc.objects.iter().any(|(_, obj)| {
+        obj.as_dict()
+            .ok()
+            .and_then(|d| d.get(b"Type").ok())
+            .and_then(|t| t.as_name_str().ok())
+            .is_some_and(|name| name == "Font")
+    });
+    assert!(
+        !has_font_object,
+        "flattened PDF should have no /Font objects (image-only PDF)"
+    );
+
+    let has_image_object = doc.objects.iter().any(|(_, obj)| {
+        obj.as_stream()
+            .ok()
+            .and_then(|s| s.dict.get(b"Subtype").ok())
+            .and_then(|t| t.as_name_str().ok())
+            .is_some_and(|name| name == "Image")
+    });
+    assert!(
+        has_image_object,
+        "flattened PDF should contain at least one /Image XObject"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -163,37 +191,89 @@ fn flatten_visible_text_pdf() {
     // Obvious source secret bytes must not be copied into the rebuilt PDF.
     assert_no_source_secret_bytes(&flattened_bytes);
 
-    // Structural check via lopdf: no Font objects, image XObject present
-    let doc = lopdf::Document::load(&output_pdf).expect("flattened PDF should load with lopdf");
-
-    let has_font_object = doc.objects.iter().any(|(_, obj)| {
-        obj.as_dict()
-            .ok()
-            .and_then(|d| d.get(b"Type").ok())
-            .and_then(|t| t.as_name_str().ok())
-            .is_some_and(|name| name == "Font")
-    });
-    assert!(
-        !has_font_object,
-        "flattened PDF should have no /Font objects (image-only PDF)"
-    );
-
-    let has_image_object = doc.objects.iter().any(|(_, obj)| {
-        obj.as_stream()
-            .ok()
-            .and_then(|s| s.dict.get(b"Subtype").ok())
-            .and_then(|t| t.as_name_str().ok())
-            .is_some_and(|name| name == "Image")
-    });
-    assert!(
-        has_image_object,
-        "flattened PDF should contain at least one /Image XObject"
-    );
+    assert_image_only_structure(&output_pdf);
 
     eprintln!(
         "  structural checks passed: no extractable text, no source secret bytes, no /Font objects, /Image XObject present."
     );
 
     // Clean up
+    std::fs::remove_dir_all(&out_dir).ok();
+}
+
+#[test]
+fn flatten_with_manual_raster_mask_is_image_only_pdf() {
+    let env_val = std::env::var("PDF_CLEANROOM_FLATTEN_TESTS").unwrap_or_default();
+    if env_val != "1" {
+        eprintln!("skipping raster mask test: PDF_CLEANROOM_FLATTEN_TESTS not set to 1");
+        return;
+    }
+
+    let renderer = match find_renderer() {
+        Some(r) => r,
+        None => {
+            eprintln!("SKIP: no PDF renderer found (tried pdftoppm, mutool, gs)");
+            return;
+        }
+    };
+
+    let out_dir = PathBuf::from("target/pdf-cleanroom-flatten-mask-test");
+    std::fs::create_dir_all(&out_dir)
+        .expect("failed to create target/pdf-cleanroom-flatten-mask-test/");
+
+    let src_pdf = out_dir.join("source.pdf");
+    let pdf_bytes = pdf_fixtures::visible_text_pdf();
+    std::fs::write(&src_pdf, &pdf_bytes)
+        .unwrap_or_else(|e| panic!("failed to write source PDF: {e}"));
+
+    let output_pdf = out_dir.join("masked.pdf");
+    let masks = [pdf_cleanroom::flatten::MaskRegion {
+        page: 1,
+        // A deliberately broad manual region over the visible fixture text near
+        // the top-left of the A4 page. Coordinates are PDF points, bottom-left
+        // origin; this test verifies the internal/test-only raster path without
+        // exposing a production CLI.
+        x: 45.0,
+        y: 700.0,
+        width: 360.0,
+        height: 90.0,
+        source: "manual".to_string(),
+        reason: "integration-test visible secrets".to_string(),
+    }];
+
+    let result = pdf_cleanroom::flatten::flatten_pdf_with_masks(
+        src_pdf.to_str().unwrap(),
+        output_pdf.to_str().unwrap(),
+        &renderer,
+        &masks,
+    );
+    assert!(
+        result.is_ok(),
+        "flatten_pdf_with_masks failed with renderer={renderer}: {:?}",
+        result.err(),
+    );
+
+    assert!(output_pdf.exists(), "masked output PDF should exist");
+    assert_valid_pdf(&output_pdf);
+
+    let masked_bytes =
+        std::fs::read(&output_pdf).unwrap_or_else(|e| panic!("failed to read masked PDF: {e}"));
+    assert_no_extractable_text(&masked_bytes, "masked");
+    assert_no_source_secret_bytes(&masked_bytes);
+    assert_image_only_structure(&output_pdf);
+
+    eprintln!(
+        "raster mask test: {} → {} ({:.1} KB → {:.1} KB, renderer={})",
+        src_pdf.display(),
+        output_pdf.display(),
+        pdf_bytes.len() as f64 / 1024.0,
+        masked_bytes.len() as f64 / 1024.0,
+        renderer,
+    );
+
+    // TODO: add a redaction-aware visual benchmark that renders output back to
+    // pixels and measures masked/unmasked regions separately. The unit test in
+    // src/flatten.rs verifies exact pixel mutation without native tools.
+
     std::fs::remove_dir_all(&out_dir).ok();
 }

@@ -1,12 +1,14 @@
 # Visual Fidelity Benchmarks
 
-pdf-cleanroom has three output strategies with very different fidelity profiles:
+pdf-cleanroom has several output families with very different fidelity profiles:
 
 | Strategy | Fidelity goal | Likely fidelity |
 |---|---|---|
-| `text-only` | Minimal — fresh PDF from extracted text | Low (no layout, no images) |
-| `flatten-visible` | High — preserve visible content, sanitize secrets | Unknown (not implemented) |
-| `preserve` | Maximal — same layout, destructive redaction only | Unknown (not implemented) |
+| `text-only` | Clean text archival and AI ingestion | Low visual fidelity |
+| `flatten-raster` | Image-only visual flattening | High visual fidelity, no text layer |
+| `raster-redacted` | Image-only visual redaction via pixel masks | High outside masks, intentionally different inside masks |
+| `layered-pdf` | DjVu-like searchable visual clean-room PDF | High visual fidelity plus sanitized derived search text |
+| `preserve` | Future destructive original-structure redaction | Unknown (not implemented) |
 
 A benchmark is needed to quantify these trade-offs, both for regression prevention
 and to guide future strategy development.
@@ -55,16 +57,20 @@ not penalise that region as a visual difference. The comparison algorithm:
 
 1. Render both input and output pages to PNG at the same DPI.
 2. Align them (crop/scale if needed; warn if sizes differ).
-3. Compare **unmasked regions** for fidelity metrics (PSNR, SSIM, MAE).
-4. Compare **masked regions** separately to confirm they differ (i.e. the
-   secret is gone) — `MAE_masked > threshold` is a passing condition.
+3. Compare **unmasked regions** for visual fidelity: MAE should stay low, SSIM
+   should stay high, and any phash/PSNR regression should be investigated.
+4. Compare **masked regions** separately: they should differ strongly from the
+   input and should be dominated by the expected mask color/style.
+5. Run OCR checks separately on output renders: non-secret anchors should remain
+   readable, while masked secret OCR hits should be zero.
 
 Mask regions can be:
-- **Auto-detected**: areas where pixel difference exceeds a threshold after
-  text extraction. The thinking is: if lopdf could extract text from a region
-  and that text was a secret, the region is "masked".
-- **Provided explicitly** via a bounding-box list (e.g. from `qpdf --json`
-  annotation rects or a future preserve backend's redaction list).
+- **Manual**: explicit `MaskRegion { page, x, y, width, height, source, reason }`
+  rectangles in PDF points, converted to rendered pixels.
+- **Detector-derived**: future areas mapped from sanitized text extraction or
+  OCR findings.
+- **Provided externally** via a bounding-box list (e.g. from qpdf inspection,
+  annotation rects, or a future preserve backend's redaction list).
 - **Fallback**: if no mask regions are known, the whole page is compared
   unmasked (and metrics are expected to be poor for `text-only`).
 
@@ -118,6 +124,7 @@ readable. This is the "text usability" metric.
 | Metric | Meaning |
 |---|---|
 | `ocr_anchor_recall` | Fraction of known non-secret strings detected by OCR in output |
+| `secret_ocr_hits` | Count of known secret strings detected by OCR in output; must be zero for redacted outputs |
 
 ## Benchmark output format
 
@@ -182,7 +189,8 @@ target/pdf-cleanroom-bench/
         "acroform_present": false,
         "encrypted": false
       },
-      "ocr_anchor_recall": null
+      "ocr_anchor_recall": null,
+      "secret_ocr_hits": null
     }
   ],
   "summary": {
