@@ -175,6 +175,48 @@ than `eng` alone.
 - Generated PDFs and PNGs are written to `target/pdf-cleanroom-ocr/`
   (gitignored).
 
+## Flatten-raster strategy
+
+The `--strategy flatten-raster` option renders each page of the source PDF
+to a raster image and rebuilds a fresh image-only PDF from those images.
+This preserves visual appearance better than `text-only` (images, layout,
+fonts are baked into pixels) but produces output with **no selectable text**.
+
+```sh
+# Basic flatten
+pdf-cleanroom rebuild input.pdf output.pdf --strategy flatten-raster
+```
+
+**Important caveats:**
+- Selectable text is removed — the output contains only raster images.
+- Visible secrets in the rendered images are **NOT masked**.
+- Requires an external PDF renderer: `pdftoppm` (poppler-utils), `mutool`
+  (mupdf-tools), or `gs` (ghostscript).
+- Without a renderer, the command fails with a clear error message.
+- Intermediate PPM files are written to `target/pdf-cleanroom-flatten/`
+  (gitignored).
+
+### Flatten smoke tests
+
+```sh
+PDF_CLEANROOM_FLATTEN_TESTS=1 cargo test --test integration_flatten
+```
+
+Generates a synthetic PDF with known secrets, flattens it, and verifies:
+- Output is a valid PDF with non-trivial size
+- Normal text extraction finds zero secrets (image-only)
+- No mandatory dependencies added — normal `cargo test` is unaffected
+
+### Limitations
+
+- **No pixel masking.** Secrets visible in the rendered image remain
+  visible. This strategy is a visual-flattening pass, not a redaction tool.
+- **No OCR.** The output has no hidden text layer.
+- **Renderer quality.** Visual fidelity depends on the external renderer's
+  DPI and capabilities. 200 DPI is the default.
+- **Page dimensions.** Output page dimensions approximate the source via
+  MediaBox extraction or image dimensions at render DPI.
+
 See [DESIGN.md](DESIGN.md) and [BENCHMARKS.md](BENCHMARKS.md) for the
 longer-term strategy around visual fidelity measurement and OCR integration.
 

@@ -137,3 +137,15 @@
 - Les polices bitmaps 5×7 restent trop grossières pour Tesseract — la
   détection OCR réelle utilise le test Pillow (police DejaVuSans, 18pt).
 - `cargo test` : 66 tests passent (0 régression).
+
+### 2026-05-24 — flatten-raster strategy
+- Nouveau module `src/flatten.rs` : détection de renderer (pdftoppm/mutool/gs),
+  rendu de page→PPM, construction PDF image-only via lopdf.
+- Variant `FlattenRaster` ajouté à l'enum `Strategy`.
+- `--strategy flatten-raster` dans le CLI : rend chaque page en image,
+  reconstruit un PDF sans texte sélectionnable.
+- Avertissement clair : les secrets visibles dans l'image NE sont PAS masqués.
+- Échec explicite si aucun renderer externe n'est trouvé.
+- `tests/integration_flatten.rs` : test optionnel (PDF_CLEANROOM_FLATTEN_TESTS=1).
+- Norme `cargo test` : 68 tests passent (0 régression, 1 ignoré visuel).
+- README.md et DESIGN.md mis à jour.

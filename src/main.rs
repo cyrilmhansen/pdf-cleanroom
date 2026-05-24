@@ -94,6 +94,28 @@ fn cmd_rebuild(
     mask_mode: MaskMode,
     cli: &Cli,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Early exit for flatten-raster: no text extraction, no detection, no masking.
+    if cli.strategy == Strategy::FlattenRaster {
+        let renderer = pdf_cleanroom::flatten::detect_renderer()
+            .ok_or_else(|| {
+                let msg = "no PDF renderer found — install poppler-utils (pdftoppm), \
+                           mupdf-tools (mutool), or ghostscript (gs)";
+                eprintln!("ERROR: --strategy flatten-raster requires an external PDF renderer.\n{msg}");
+                Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, msg))
+                    as Box<dyn std::error::Error>
+            })?;
+        pdf_cleanroom::flatten::flatten_pdf(input, output, &renderer)?;
+        eprintln!(
+            "flatten-raster complete: rendered {} page(s) to image-only PDF at {output}",
+            pdf_extract::extract(input)?.num_pages,
+        );
+        eprintln!(
+            "WARNING: Output is an image-only PDF. Text is not selectable. \
+             Visible secrets in the rendered image are NOT masked."
+        );
+        return Ok(());
+    }
+
     // 1. Extract text from source PDF
     let content = pdf_extract::extract(input)?;
 

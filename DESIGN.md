@@ -27,6 +27,7 @@ Extraire le texte visible d'un PDF, détecter les secrets (email, téléphone FR
 L'utilisateur choisit une stratégie via `--strategy` :
 
 - `text-only` (défaut) : reconstruit un PDF neuf à partir du seul texte visible extrait. Les images, annotations, formulaires et métadonnées source ne sont pas copiés. C'est le comportement MVP.
+- `flatten-raster` (expérimental) : rend chaque page en image raster (PPM) via un renderer externe (pdftoppm/mutool/gs), puis reconstruit un PDF image-only. Préserve l'apparence visuelle, supprime le texte sélectionnable. Les secrets visibles dans l'image restent VISIBLES — pas de masquage pixel.
 - `flatten-visible` : destiné à préserver le contenu visible utile (images, mise en page) à l'avenir. Actuellement partiel — les images ne sont pas encore sanitisées. Un avertissement est émis à l'utilisation.
 - `preserve` (non implémenté) : refus explicite — ne sera jamais simulé par superposition de rectangles.
 
@@ -65,11 +66,12 @@ Cas couverts :
 Chaque rebuilt est vérifié : texte extrait exempt de secrets ; octets bruts exempts de secrets ; objets source absents.
 
 ## Critères de succès
-- cargo test vert (62 tests unité + intégration).
+- cargo test vert (68 tests unité + intégration, 1 ignoré).
 - scan détecte emails/tél/IBAN.
 - rebuilt produit PDF sans secrets.
 - --dry-run ne modifie rien, --unsafe-show-secrets contrôle l'affichage.
-- --strategy text-only (défaut) / flatten-visible (expérimental, avertit).
+- `flatten-raster` nécessite un renderer externe (pdftoppm/mutool/gs).
+- --strategy text-only (défaut) / flatten-raster (expérimental) / flatten-visible (expérimental, avertit).
 
 ## OCR et images
 - **OCR** : non implémenté par défaut. Architecture d'accueil définie dans `src/ocr.rs` avec trait `OcrEngine` et implémentation `NoopOcrEngine` (toujours indisponible). Le jour où un backend OCR est ajouté, il reste optionnel et limité à la détection.

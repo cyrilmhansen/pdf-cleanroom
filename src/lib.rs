@@ -10,3 +10,4 @@ pub mod pdf_extract;
 pub mod rebuild;
 pub mod report;
 pub mod safety;
+pub mod flatten;
