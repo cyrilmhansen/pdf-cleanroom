@@ -155,3 +155,8 @@
 - Ajout de `apply_pixel_masks()` : rectangles noirs, clipping aux dimensions image, modification directe du buffer RGB avant embedding.
 - Ajout de `flatten_pdf_with_masks()` pour plomberie interne/tests sans CLI publique de rédaction.
 - Tests unitaires pixels + test d'intégration optionnel flatten-raster : PDF image-only, pas de texte extractible, stream image décodé avec pixels masqués vérifiés.
+
+### 2026-05-24 — Build/version metadata
+- Ajout de `build.rs` : export du commit court, branche et état dirty via variables d'environnement de compilation, avec fallback `unknown`.
+- Ajout de `pdf-cleanroom --version` et `pdf-cleanroom version` : version crate, commit, branche, dirty, profil debug/release.
+- README enrichi avec exemple diagnostic et exemple `--strategy flatten-raster`.

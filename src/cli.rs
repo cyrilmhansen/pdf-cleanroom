@@ -1,8 +1,5 @@
 /// CLI module — argument parsing with clap.
-
 use clap::{Parser, Subcommand, ValueEnum};
-
-
 
 /// Output strategy for sanitized PDFs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -25,25 +22,28 @@ impl std::fmt::Display for Strategy {
             Self::TextOnly => write!(f, "text-only"),
             Self::FlattenVisible => write!(f, "flatten-visible"),
         }
-
     }
 }
-
 
 #[derive(Parser)]
 #[command(
     name = "pdf-cleanroom",
     about = "PDF document sanitization — detect and remove secrets from PDF files",
+    disable_version_flag = true,
     long_about = "pdf-cleanroom scans PDF documents for secrets (emails, phone numbers, IBANs) \
                   and rebuilds a clean PDF with those secrets masked or removed.\n\n\
-                  ⚠ SECURITY WARNING: pdf-cleanroom rebuilds the PDF from extracted text. \
-                  It does NOT perform pixel-level redaction. Embedded images, annotations, \
-                  and non-extracted text may still contain secrets. This tool reduces \
-                  exposure but does not guarantee complete sanitization."
+                  ⚠ SECURITY WARNING: text-only rebuilds are not pixel redaction. \
+                  Embedded images and non-extracted text may still contain secrets. \
+                  flatten-raster can produce image-only output; manual pixel mask \
+                  regions are experimental/internal plumbing."
 )]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
+
+    /// Print build/version metadata and exit.
+    #[arg(long, global = true)]
+    pub version: bool,
 
     /// Perform analysis and generate report, but do not produce a modified PDF.
     #[arg(long, global = true)]
@@ -67,18 +67,13 @@ pub struct Cli {
     ///
     /// - `flatten-raster` (experimental): render each page to an image and
     ///   rebuild an image-only PDF.  Visually faithful; no selectable text.
-    ///   Does NOT mask visible secrets in the rendered image.
+    ///   Manual pixel mask regions exist only in internal/test APIs for now.
     /// - `text-only` (default): rebuild a fresh PDF from extracted visible text only.
     ///   Images and non-text content are not preserved.
     /// - `flatten-visible`: intended to preserve visible content including images.
     ///   Currently partial — images are not yet sanitized. A warning is emitted
     ///   when this strategy is selected.
-    #[arg(
-        long,
-        default_value = "text-only",
-        value_enum,
-        global = true
-    )]
+    #[arg(long, default_value = "text-only", value_enum, global = true)]
     pub strategy: Strategy,
 }
 
@@ -108,6 +103,7 @@ pub enum Command {
     ///     pdf-cleanroom rebuild input.pdf output.pdf
     ///     pdf-cleanroom rebuild input.pdf output.pdf --mask label
     ///     pdf-cleanroom rebuild input.pdf output.pdf --report report.json
+    ///     pdf-cleanroom --strategy flatten-raster rebuild input.pdf output.pdf
     Rebuild {
         /// Input PDF file path.
         input: String,
@@ -119,6 +115,9 @@ pub enum Command {
         #[arg(long)]
         report: Option<String>,
     },
+
+    /// Print build/version metadata.
+    Version,
 
     /// Preserve fidelity mode (NOT IMPLEMENTED).
     ///

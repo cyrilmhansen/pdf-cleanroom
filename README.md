@@ -23,6 +23,20 @@ This is an **experimental research project** developed iteratively with LLM-base
 $ pdf-cleanroom --help
 ```
 
+Diagnostic version metadata:
+
+```bash
+pdf-cleanroom --version
+# pdf-cleanroom 0.1.0
+# commit: 99bfd1d
+# branch: feat/pixel-mask-regions
+# dirty: false
+# profile: debug
+
+# or
+pdf-cleanroom version
+```
+
 ### Scan
 
 Analyze a PDF and produce a JSON report of detected secrets:
@@ -47,6 +61,9 @@ pdf-cleanroom rebuild input.pdf output.pdf --report report.json
 
 # Dry-run: analyze only, do not write output
 pdf-cleanroom rebuild input.pdf output.pdf --dry-run
+
+# Visual image-only flattening
+pdf-cleanroom --strategy flatten-raster rebuild input.pdf output.pdf
 ```
 
 ### Preserve (NOT IMPLEMENTED)

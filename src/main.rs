@@ -7,32 +7,47 @@ mod cli;
 use clap::Parser;
 use cli::{Cli, Command, Strategy};
 
-
-
 use pdf_cleanroom::{
     detect::Detector,
     mask::{self, MaskMode},
     pdf_extract, rebuild, report, safety,
 };
 
+use pdf_cleanroom::version;
+
 fn main() {
     let cli = Cli::parse();
+
+    if cli.version {
+        println!("{}", version::version_string());
+        return;
+    }
 
     let mask_mode = MaskMode::from_str(&cli.mask).unwrap_or(MaskMode::BlackBlock);
 
     let result = match &cli.command {
-        Command::Scan { input, report } => cmd_scan(input, report.as_deref(), &cli),
-        Command::Rebuild {
+        Some(Command::Scan { input, report }) => cmd_scan(input, report.as_deref(), &cli),
+        Some(Command::Rebuild {
             input,
             output,
             report,
-        } => cmd_rebuild(input, output, report.as_deref(), mask_mode, &cli),
-        Command::Preserve { .. } => {
-            safety::check_preserve_not_implemented().map_err(|e| {
-                eprintln!("ERROR: {e}");
-                std::process::exit(1);
-            }).ok();
+        }) => cmd_rebuild(input, output, report.as_deref(), mask_mode, &cli),
+        Some(Command::Version) => {
+            println!("{}", version::version_string());
+            Ok(())
+        }
+        Some(Command::Preserve { .. }) => {
+            safety::check_preserve_not_implemented()
+                .map_err(|e| {
+                    eprintln!("ERROR: {e}");
+                    std::process::exit(1);
+                })
+                .ok();
             unreachable!()
+        }
+        None => {
+            eprintln!("ERROR: command required. Use --help for usage.");
+            std::process::exit(2);
         }
     };
 
@@ -96,14 +111,13 @@ fn cmd_rebuild(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Early exit for flatten-raster: no text extraction, no detection, no masking.
     if cli.strategy == Strategy::FlattenRaster {
-        let renderer = pdf_cleanroom::flatten::detect_renderer()
-            .ok_or_else(|| {
-                let msg = "no PDF renderer found — install poppler-utils (pdftoppm), \
+        let renderer = pdf_cleanroom::flatten::detect_renderer().ok_or_else(|| {
+            let msg = "no PDF renderer found — install poppler-utils (pdftoppm), \
                            mupdf-tools (mutool), or ghostscript (gs)";
-                eprintln!("ERROR: --strategy flatten-raster requires an external PDF renderer.\n{msg}");
-                Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, msg))
-                    as Box<dyn std::error::Error>
-            })?;
+            eprintln!("ERROR: --strategy flatten-raster requires an external PDF renderer.\n{msg}");
+            Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, msg))
+                as Box<dyn std::error::Error>
+        })?;
         pdf_cleanroom::flatten::flatten_pdf(input, output, &renderer)?;
         eprintln!(
             "flatten-raster complete: rendered {} page(s) to image-only PDF at {output}",
@@ -145,14 +159,11 @@ fn cmd_rebuild(
         }
 
         // Apply masks to text
-        let cleaned_text: String = rebuild::apply_masks_to_text(&page.text, &detections, mask_mode).0;
-
+        let cleaned_text: String =
+            rebuild::apply_masks_to_text(&page.text, &detections, mask_mode).0;
 
         // Split into lines for rendering
-        let lines: Vec<String> = cleaned_text
-            .lines()
-            .map(|l| l.to_string())
-            .collect();
+        let lines: Vec<String> = cleaned_text.lines().map(|l| l.to_string()).collect();
 
         clean_pages.push(rebuild::CleanPage {
             page_num: page.page_num,
@@ -187,7 +198,6 @@ fn cmd_rebuild(
              Images from the source PDF are not preserved in the output."
         );
     }
-
 
     let metadata = rebuild::RebuildMetadata {
         title: format!("pdf-cleanroom — {}", input),
