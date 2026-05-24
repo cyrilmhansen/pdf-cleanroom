@@ -1,0 +1,17 @@
+/target
+
+# Generated PDFs (test outputs, rebuild outputs)
+*.pdf
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+*~
+
+# Generated scan/rebuild reports (user-facing --report output)
+*.report.json
+
+# Raw provider/debug request dumps
+request_*.log
+raw_logs/
