@@ -86,6 +86,19 @@ pub enum Command {
     },
 
     /// Rebuild a PDF with secrets masked.
+    ///
+    /// Extracts visible text from the input PDF, detects secrets (emails,
+    /// French phone numbers, IBANs), replaces them with masked text, and
+    /// writes a clean PDF to OUTPUT.
+    ///
+    /// The output is a fresh printpdf document — source PDF structure
+    /// (metadata, annotations, forms, attachments) is never copied.
+    ///
+    /// # Examples
+    ///
+    ///     pdf-cleanroom rebuild input.pdf output.pdf
+    ///     pdf-cleanroom rebuild input.pdf output.pdf --mask label
+    ///     pdf-cleanroom rebuild input.pdf output.pdf --report report.json
     Rebuild {
         /// Input PDF file path.
         input: String,

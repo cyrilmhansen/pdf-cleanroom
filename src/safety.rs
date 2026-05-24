@@ -27,9 +27,12 @@ impl std::fmt::Display for SafetyError {
                 write!(
                     f,
                     "preserve mode is not implemented. \
-                     pdf-cleanroom will never redact by overlaying black rectangles. \
-                     A real destructive removal must be implemented first. \
-                     Use 'rebuild' for a clean PDF reconstruction."
+                     A real destructive redaction backend (such as redactor/MuPDF \
+                     or similar) must be integrated first. \
+                     pdf-cleanroom will NEVER simulate redaction by overlaying \
+                     black rectangles.\n\
+                     Use 'rebuild' for a clean PDF reconstruction. \
+                     See PRESERVE_BACKENDS.md for details."
                 )
             }
             Self::Io(e) => write!(f, "I/O error: {e}"),

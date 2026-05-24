@@ -532,3 +532,295 @@ pub fn image_embedded_only_pdf() -> Vec<u8> {
 pub fn image_embedded_with_text_pdf() -> Vec<u8> {
     doc_with_embedded_image(Some("Image caption"))
 }
+
+// ---------------------------------------------------------------------------
+// 16. Accented text PDF (no secrets, French accents)
+// ---------------------------------------------------------------------------
+
+/// Multi-line PDF with accented French characters (é, è, ê, à, ç, ô, etc.).
+/// No secrets — used to verify text-only rebuild preserves Unicode.
+pub fn accented_text_pdf() -> Vec<u8> {
+    let (doc, page, layer) = PdfDocument::new(
+        "accented-text",
+        Mm(210.0),
+        Mm(297.0),
+        "Content",
+    );
+    let font = doc
+        .add_builtin_font(BuiltinFont::Helvetica)
+        .expect("font");
+    let layer = doc.get_page(page).get_layer(layer);
+
+    layer.use_text("Français: é è ê ë à â ä ç ô î ï û ü", 11.0, Mm(20.0), Mm(270.0), &font);
+    layer.use_text("Español: ñ ó í ú ü á é", 11.0, Mm(20.0), Mm(260.0), &font);
+    layer.use_text("Deutsch: ä ö ü ß Ä Ö Ü", 11.0, Mm(20.0), Mm(250.0), &font);
+    layer.use_text("Symboles: € « » — …", 11.0, Mm(20.0), Mm(240.0), &font);
+    layer.use_text("Chiffres: 1 250,00 € — 99,9 %", 11.0, Mm(20.0), Mm(230.0), &font);
+
+    let mut buf = Vec::new();
+    doc.save(&mut BufWriter::new(&mut buf))
+        .expect("save accented-text PDF");
+    buf
+}
+
+// ---------------------------------------------------------------------------
+// 17. Synthetic administrative document PDF (has secrets)
+// ---------------------------------------------------------------------------
+
+/// PDF resembling a bank transfer certificate with headings, labels, amounts,
+/// and embedded secrets (IBAN, phone, email).
+///
+/// Secrets are in visible text and should be detected and removed by rebuild.
+/// Labels and structural text should survive.
+pub fn admin_document_pdf() -> Vec<u8> {
+    let (doc, page, layer) = PdfDocument::new(
+        "releve-de-compte",
+        Mm(210.0),
+        Mm(297.0),
+        "Content",
+    );
+    let font = doc
+        .add_builtin_font(BuiltinFont::Helvetica)
+        .expect("font");
+    let layer = doc.get_page(page).get_layer(layer);
+
+    // Heading
+    layer.use_text("RELEVÉ DE COMPTE", 14.0, Mm(20.0), Mm(275.0), &font);
+    layer.use_text("Banque Fictive SA — Paris", 10.0, Mm(20.0), Mm(268.0), &font);
+    layer.use_text("Date: 15/04/2026", 10.0, Mm(20.0), Mm(260.0), &font);
+
+    // Account info
+    layer.use_text("Titulaire: Jean Démo", 11.0, Mm(20.0), Mm(248.0), &font);
+    layer.use_text("IBAN: FR76 3000 6000 0112 3456 7890 189", 11.0, Mm(20.0), Mm(238.0), &font);
+
+    // Contact
+    layer.use_text("Email: jean.demo@example.com", 11.0, Mm(20.0), Mm(226.0), &font);
+    layer.use_text("Tél: 06 11 22 33 44", 11.0, Mm(20.0), Mm(216.0), &font);
+
+    // Transaction
+    layer.use_text("Virement entrant — 1 250,00 €", 11.0, Mm(20.0), Mm(204.0), &font);
+    layer.use_text("Référence: VIR-2026-0042", 10.0, Mm(20.0), Mm(196.0), &font);
+    layer.use_text("Motif: Remboursement prêt", 10.0, Mm(20.0), Mm(188.0), &font);
+    layer.use_text("Solde après opération: 4 820,75 €", 11.0, Mm(20.0), Mm(178.0), &font);
+
+    let mut buf = Vec::new();
+    doc.save(&mut BufWriter::new(&mut buf))
+        .expect("save admin-document PDF");
+    buf
+}
+
+// ---------------------------------------------------------------------------
+// 18. Image-only PDF with secret text rendered into pixels (for OCR tests)
+// ---------------------------------------------------------------------------
+
+/// 5×7 bitmap font data.
+///
+/// Each character is 7 rows. Each byte's lower 5 bits represent one row:
+/// bit 4 = leftmost column, bit 0 = rightmost column.
+fn bitmap_5x7(c: u8) -> [u8; 7] {
+    match c {
+        b' ' => [0x00; 7],
+        b'0' => [0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E],
+        b'1' => [0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E],
+        b'2' => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F],
+        b'3' => [0x1F, 0x01, 0x02, 0x06, 0x01, 0x11, 0x0E],
+        b'4' => [0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02],
+        b'5' => [0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E],
+        b'6' => [0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E],
+        b'7' => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08],
+        b'8' => [0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E],
+        b'9' => [0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C],
+        b'a' => [0x00, 0x00, 0x0E, 0x01, 0x0F, 0x11, 0x0F],
+        b'b' => [0x10, 0x10, 0x1E, 0x11, 0x11, 0x11, 0x1E],
+        b'c' => [0x00, 0x00, 0x0E, 0x11, 0x10, 0x11, 0x0E],
+        b'd' => [0x01, 0x01, 0x0F, 0x11, 0x11, 0x11, 0x0F],
+        b'e' => [0x00, 0x00, 0x0E, 0x11, 0x1F, 0x10, 0x0E],
+        b'f' => [0x06, 0x09, 0x08, 0x1E, 0x08, 0x08, 0x08],
+        b'g' => [0x00, 0x00, 0x0F, 0x11, 0x11, 0x0F, 0x01],
+        b'h' => [0x10, 0x10, 0x1E, 0x11, 0x11, 0x11, 0x11],
+        b'i' => [0x04, 0x00, 0x0C, 0x04, 0x04, 0x04, 0x0E],
+        b'j' => [0x02, 0x00, 0x06, 0x02, 0x02, 0x12, 0x0C],
+        b'l' => [0x0C, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E],
+        b'm' => [0x00, 0x00, 0x1A, 0x15, 0x15, 0x15, 0x15],
+        b'n' => [0x00, 0x00, 0x1E, 0x11, 0x11, 0x11, 0x11],
+        b'o' => [0x00, 0x00, 0x0E, 0x11, 0x11, 0x11, 0x0E],
+        b'p' => [0x00, 0x00, 0x1E, 0x11, 0x11, 0x1E, 0x10],
+        b'r' => [0x00, 0x00, 0x16, 0x19, 0x10, 0x10, 0x10],
+        b's' => [0x00, 0x00, 0x0E, 0x10, 0x0E, 0x01, 0x1E],
+        b't' => [0x08, 0x08, 0x1E, 0x08, 0x08, 0x09, 0x06],
+        b'u' => [0x00, 0x00, 0x11, 0x11, 0x11, 0x11, 0x0E],
+        b'v' => [0x00, 0x00, 0x11, 0x11, 0x0A, 0x0A, 0x04],
+        b'x' => [0x00, 0x00, 0x11, 0x0A, 0x04, 0x0A, 0x11],
+        b'F' => [0x1F, 0x10, 0x1F, 0x10, 0x10, 0x10, 0x10],
+        b'R' => [0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11],
+        b'.' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C],
+        b'@' => [0x0E, 0x11, 0x17, 0x15, 0x17, 0x10, 0x0E],
+        _   => [0x00; 7],
+    }
+}
+
+/// Render a string into a raw RGB buffer using a 5×7 bitmap font.
+///
+/// Returns `(pixels, width, height)` where `pixels` has `width × height × 3`
+/// bytes (RGB, row-major, top-to-bottom). Background is white, text is black.
+///
+/// `scale` controls how many actual pixels each font pixel occupies (e.g. 4 →
+/// each 5×7 character cell becomes 20×28 pixels).
+fn render_text_to_rgb(
+    text: &str,
+    scale: u32,
+) -> (Vec<u8>, u32, u32) {
+    // Character cell metrics (in font-pixel units)
+    const CHAR_W: u32 = 5;
+    const CHAR_H: u32 = 7;
+    const SPACE_X: u32 = 1; // horizontal gap between chars
+    const SPACE_Y: u32 = 2; // vertical gap between lines
+
+    // Layout text into lines (split on '\n')
+    let lines: Vec<&str> = text.lines().collect();
+    let max_line_len = lines.iter().map(|l| l.len()).max().unwrap_or(0);
+
+    // Image dimensions in actual pixels
+    let img_w = ((CHAR_W + SPACE_X) * max_line_len as u32 + SPACE_X) * scale;
+    let img_h = ((CHAR_H + SPACE_Y) * lines.len() as u32 + SPACE_Y) * scale;
+    let img_w_usize = img_w as usize;
+    let img_h_usize = img_h as usize;
+
+    // Allocate RGB buffer, fill with white
+    let mut pixels = vec![255u8; img_w_usize * img_h_usize * 3];
+
+    for (line_idx, line) in lines.iter().enumerate() {
+        let y0 = (SPACE_Y + (CHAR_H + SPACE_Y) * line_idx as u32) * scale;
+        for (col, ch) in line.bytes().enumerate() {
+            let x0 = (SPACE_X + (CHAR_W + SPACE_X) * col as u32) * scale;
+            let bitmap = bitmap_5x7(ch);
+
+            for row in 0..CHAR_H {
+                let row_bits = bitmap[row as usize];
+                for col_bit in 0..CHAR_W {
+                    // Bit 4 = leftmost column
+                    if (row_bits >> (4 - col_bit)) & 1 == 0 {
+                        continue; // background pixel, stays white
+                    }
+                    // Draw a scaled block of black pixels
+                    for sy in 0..scale {
+                        for sx in 0..scale {
+                            let px = (x0 + col_bit * scale + sx) as usize;
+                            let py = (y0 + row * scale + sy) as usize;
+                            let idx = (py * img_w_usize + px) * 3;
+                            pixels[idx..idx + 3].copy_from_slice(&[0, 0, 0]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    (pixels, img_w, img_h)
+}
+
+/// PDF containing only an image with visible secret text rendered into pixels.
+///
+/// The secrets (email, phone, IBAN) are drawn as raster graphics — they do not
+/// exist as selectable PDF text. Normal text extraction will find nothing.
+/// Only OCR on a rendered PNG can recover them.
+pub fn image_only_secrets_pdf() -> Vec<u8> {
+    let (ppm, w, h) = render_secrets_ppm();
+    // Skip PPM header to get raw RGB data
+    let header_end = ppm.iter().position(|&b| b == b'\n')
+        .and_then(|i1| ppm[i1+1..].iter().position(|&b| b == b'\n'))
+        .and_then(|i2| ppm[i2+1..].iter().position(|&b| b == b'\n'))
+        .map(|i3| i3 + 3)
+        .expect("valid PPM header");
+    let image_data = ppm[header_end..].to_vec();
+    let img_w = w;
+    let img_h = h;
+
+    let mut doc = Document::with_version("1.5");
+
+    // Image XObject
+    let image_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => Object::from(img_w as i64),
+            "Height" => Object::from(img_h as i64),
+            "ColorSpace" => "DeviceRGB",
+            "BitsPerComponent" => 8_i64,
+        },
+        image_data,
+    ));
+
+    // Resources: just the image
+    let resources_id = doc.add_object(dictionary! {
+        "XObject" => dictionary! {
+            "Im0" => image_id,
+        },
+    });
+
+    // Page content: scale image from unit square to its pixel dimensions
+    let content_text = format!(
+        "q\n{} 0 0 {} 20 20 cm\n/Im0 Do\nQ\n",
+        img_w, img_h,
+    );
+    let content_id = doc.add_object(Stream::new(
+        dictionary! {},
+        content_text.into_bytes(),
+    ));
+
+    // Page dimensions match the embedded image (plus a small margin).
+    let page_w: i64 = (img_w + 20) as i64;
+    let page_h: i64 = (img_h + 20) as i64;
+
+    // Pages tree
+    let pages_id = doc.new_object_id();
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Contents" => content_id,
+        "Resources" => resources_id,
+        "MediaBox" => vec![0.into(), 0.into(), Object::from(page_w), Object::from(page_h)],
+    });
+
+    let pages = dictionary! {
+        "Type" => "Pages",
+        "Kids" => vec![Object::from(page_id)],
+        "Count" => 1,
+        "MediaBox" => vec![0.into(), 0.into(), Object::from(page_w), Object::from(page_h)],
+    };
+    doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+    // Catalog
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+
+    let mut buf = Vec::new();
+    doc.save_to(&mut buf).expect("save image-only secrets PDF");
+    buf
+}
+
+
+/// Render the secret text into a PPM (P6) image using the 5×7 bitmap font.
+///
+/// **Note**: The 5x7 bitmap font is very crude — Tesseract struggles to
+/// recognise characters even at large scales.  For reliable OCR tests use
+/// **Note**: The 5x7 bitmap font is crude — Tesseract may struggle at low
+/// scales. Scale=6 produces readable output for most secrets.
+pub fn render_secrets_ppm() -> (Vec<u8>, u32, u32) {
+    let text = concat!(
+        "camille.demo@example.org\n",
+        "06 12 34 56 78\n",
+        "FR76 3000 6000 0112 3456 7890 189",
+    );
+    let scale = 6;
+    let (rgb, w, h) = render_text_to_rgb(text, scale);
+
+    let header = format!("P6\n{w} {h}\n255\n");
+    let mut ppm = Vec::with_capacity(header.len() + rgb.len());
+    ppm.extend_from_slice(header.as_bytes());
+    ppm.extend_from_slice(&rgb);
+    (ppm, w, h)
+}

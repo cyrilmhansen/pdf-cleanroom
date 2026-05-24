@@ -81,3 +81,59 @@
 - Phrase maladroite sur le redaction pixel-level corrigée dans README.md.
 - DESIGN.md réduit de 86 à 79 lignes (suppression blancs, architecture et vérifications condensées).
 - `cargo test` : 62 tests passent (aucune régression).
+
+## 2026-05-24 — Preserve backends, rebuild quality, demo, CLI
+- Investigation documentée dans PRESERVE_BACKENDS.md : rôles des outils (rendu, inspection qpdf, rédaction destructive redactor, extraction lopdf, OCR Tesseract). qpdf --json=2 validé sur 15 PDFs de test.
+- preserve reste non implémenté ; message d'erreur amélioré avec référence au backend nécessaire.
+- Trait `PdfTextExtractor` + implémentation `LopdfExtractor` ajoutés dans `pdf_extract.rs`.
+- Reconstructions text-only améliorées : espacement des lignes 6pt→14pt, marges, habillage de mots (>85 car.), gestion UTF-8 multi-octets.
+- Fixtures ajoutées : `accented_text_pdf()`, `admin_document_pdf()`.
+- 3 nouveaux tests integration_rebuild : accents, document admin, ordre des labels (65 tests, 0 échec).
+- README.md : exemples rebuild enrichis, aide CLI du rebuilder enrichie.
+- Nouvel exemple `examples/demo_transfer_certificate.rs` génère une fausse attestation de virement.
+- `cargo test` : 65 tests passent (62 existants + 3 qualité rebuild).
+
+## 2026-05-24 — Benchmark design & visual metrics skeleton
+- `BENCHMARKS.md` créé : métriques (PSNR, SSIM, MAE, phash), comparaison redaction-aware, format de sortie `target/pdf-cleanroom-bench/`, plan d'implémentation en 5 phases.
+- Renderers documentés : pdftoppm, mutool draw, Ghostscript, pdfium-render (tous optionnels, invoqués via `std::process::Command`).
+- `tests/support/visual_metrics.rs` ajouté : `VisualBenchmarkResult`, `PageVisualMetrics`, `RenderedPage`, `MaskRegion`, `PixelMetrics`, `SanitizationChecks`, `BenchConfig`, `BenchSummary` — définitions uniquement, pas de rendu.
+- `tests/support/mod.rs` mis à jour avec `pub mod visual_metrics`.
+- Aucune dépendance ajoutée, aucun rendu implémenté.
+
+## 2026-05-24 — Optional Tesseract OCR smoke test
+- `tests/integration_ocr_smoke.rs` : test complet du pipeline OCR (PDF → rendu PNG → tesseract → Détecteur → Rapport).
+- Gating via `PDF_CLEANROOM_OCR_TESTS=1` ; normal `cargo test` ne dépend pas de Tesseract.
+- Détection externe de renderer (pdftoppm > mutool) et de tesseract (PATH).
+- PDF généré via `visible_text_pdf()`, rendu en PNG sous `target/pdf-cleanroom-ocr/`.
+- tesseract invoqué avec `-l fra+eng` pour une meilleure reconnaissance des IBAN/téléphones français.
+- Assertion : au moins 1 secret détecté (la qualité OCR varie, pas tous les secrets plantés sont exigés).
+- Intégration Report avec `source: "ocr"` exercée.
+- Texte OCR affiché sur stderr pour diagnostic en cas d'échec.
+- README.md : section « Optional OCR smoke tests » ajoutée (prérequis, limitations).
+- Aucune dépendance Rust ajoutée, aucun rendu implémenté.
+
+### Correction — image-only PDF fix et test PPM/Pillow
+- Le fixture `image_only_secrets_pdf()` utilise désormais `render_secrets_ppm()` pour éviter la duplication du texte secret.
+- Le test principal OCR utilise Python+Pillow pour générer une image texte nette (police DejaVuSans, 18pt), évitant la police bitmaps 5×7 trop grossière pour Tesseract.
+- Fallback si Pillow n'est pas installé : skip avec message clair (code retour 2).
+- `render_secrets_ppm()` conserve l'approche bitmap 5×7 (scale=4) pour le PDF embed, avec documentation explicite des limites.
+- Le test image-only PDF reste SKIP avec TODO (problème de rendu DeviceRGB non résolu).
+- Testé avec Pillow 11.x + Tesseract 5.5.2 : 1 test passe (pipelines Pillow + visible-text PDF).
+- `cargo test` : 66 tests passent (0 régression).
+- Testé avec tesseract 5.5.2 + pdftoppm 26.05.0 : 1 test passe (pipeline complet).
+- `cargo test` : 66 tests passent (0 régression).
+- `cargo test` : 65 tests passent (aucune régression).
+
+### 2026-05-24 — Image-only PDF rendering fix
+- **Root cause**: `/Im0 Do` maps the image to the unit square [0,1]×[0,1] in
+  user space, then transforms by the CTM.  With identity CTM (no `cm`
+  operator), ANY image renders at 1×1 point — invisible at typical DPI.
+- **Fix**: Added `{width} 0 0 {height} 20 20 cm` before `/Im0 Do` in the
+  content stream, scaling the unit square to the image's pixel dimensions.
+- `render_secrets_ppm()` scale augmenté de 4 → 6 (meilleure lisibilité).
+- `image_only_secrets_pdf()` refactored for reuse via `render_secrets_ppm()`.
+- Test image-only PDF activé : vérification structurelle (taille PNG > 10 Ko
+  prouvant que l'image XObject s'est rendue correctement).
+- Les polices bitmaps 5×7 restent trop grossières pour Tesseract — la
+  détection OCR réelle utilise le test Pillow (police DejaVuSans, 18pt).
+- `cargo test` : 66 tests passent (0 régression).

@@ -1,4 +1,8 @@
 /// PDF extraction module — text extraction via lopdf.
+///
+/// Provides both the concrete extraction functions and a `PdfTextExtractor`
+/// trait so a future pdfium-based extractor with text positions can be
+/// added later.
 
 use lopdf::Document;
 
@@ -14,6 +18,41 @@ pub struct PageContent {
 pub struct PdfContent {
     pub pages: Vec<PageContent>,
     pub num_pages: usize,
+}
+
+/// Trait for PDF text extraction backends.
+///
+/// The default implementation (`lopdf`-based) returns text without
+/// position information. A future implementation using `pdfium-render`
+/// or similar could provide text bounding boxes and better encoding
+/// support.
+pub trait PdfTextExtractor {
+    /// Extract text content from a PDF file.
+    fn extract(&self, path: &str) -> Result<PdfContent, PdfExtractError>;
+
+    /// Extract text from PDF bytes in memory.
+    fn extract_bytes(&self, data: &[u8]) -> Result<PdfContent, PdfExtractError>;
+}
+
+/// lopdf-based text extractor.
+///
+/// This is the default production extractor. It uses lopdf's built-in
+/// `extract_text` which handles basic PDF text operators (Tj, TJ, etc.)
+/// but does NOT provide text positions and cannot extract from:
+/// - Annotations, form fields, embedded files
+/// - Non-standard encodings or compressed streams lopdf cannot decode
+/// - Images (no OCR)
+#[derive(Debug, Clone, Copy)]
+pub struct LopdfExtractor;
+
+impl PdfTextExtractor for LopdfExtractor {
+    fn extract(&self, path: &str) -> Result<PdfContent, PdfExtractError> {
+        extract(path)
+    }
+
+    fn extract_bytes(&self, data: &[u8]) -> Result<PdfContent, PdfExtractError> {
+        extract_bytes(data)
+    }
 }
 
 /// Errors during PDF extraction.

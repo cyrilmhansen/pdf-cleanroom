@@ -58,26 +58,98 @@ pub fn rebuild(
     Ok(())
 }
 
+// Layout constants
+const FONT_SIZE: f32 = 10.0;
+const LINE_HEIGHT: f32 = 14.0; // ~1.4× font size for readable spacing
+const LEFT_MARGIN_MM: f32 = 20.0;
+const TOP_MARGIN_MM: f32 = 30.0;
+const BOTTOM_MARGIN_MM: f32 = 20.0;
+const MAX_CHARS_PER_LINE: usize = 85; // conservative for 10pt on A4 with 20mm margins
+
 /// Render text from a clean page onto a PDF layer.
+///
+/// Line spacing and position are best-effort — lopdf does not provide
+/// text coordinates, so we use a simple fixed-layout algorithm.
 fn render_page(
     layer: &PdfLayerReference,
     clean_page: &CleanPage,
     font: &IndirectFontRef,
 ) -> Result<(), RebuildError> {
-    let mut y_pos = 270.0_f32; // Start near top of A4 (origin is bottom-left)
+    let page_height_mm: f32 = 297.0;
+    let start_y = page_height_mm - TOP_MARGIN_MM;
+    let mut y_pos = start_y;
 
     for line in &clean_page.lines {
-        if y_pos < 20.0 {
+        if y_pos < BOTTOM_MARGIN_MM {
             break; // Bottom margin reached
         }
 
-        layer.use_text(line, 11.0, Mm(20.0), Mm(y_pos), font);
+        if line.is_empty() {
+            y_pos -= LINE_HEIGHT;
+            continue;
+        }
 
-        // Simple line spacing — best-effort layout
-        y_pos -= 6.0;
+        // Split long lines at word boundaries to avoid text overflow.
+        let wrapped_lines = wrap_line(line, MAX_CHARS_PER_LINE);
+
+        for wrapped in &wrapped_lines {
+            if y_pos < BOTTOM_MARGIN_MM {
+                break;
+            }
+            layer.use_text(wrapped, FONT_SIZE, Mm(LEFT_MARGIN_MM), Mm(y_pos), font);
+            y_pos -= LINE_HEIGHT;
+        }
     }
 
     Ok(())
+}
+
+/// Wrap a single line at space boundaries to fit within `max_chars`.
+///
+/// Operates on **character** indices, not byte indices, to handle
+/// multi-byte UTF-8 (mask characters, accents) correctly.
+fn wrap_line(line: &str, max_chars: usize) -> Vec<String> {
+    if line.chars().count() <= max_chars {
+        return vec![line.to_string()];
+    }
+
+    let mut result = Vec::new();
+    let mut remaining = line;
+
+    while !remaining.is_empty() {
+        let char_count = remaining.chars().count();
+        if char_count <= max_chars {
+            result.push(remaining.to_string());
+            break;
+        }
+
+        // Find character at position max_chars, then look back for a space.
+        let byte_end: usize = remaining
+            .chars()
+            .take(max_chars)
+            .map(|c| c.len_utf8())
+            .sum();
+
+        // Look back from byte_end for the last space.
+        let slice = &remaining[..byte_end];
+        if let Some(last_space) = slice.rfind(' ') {
+            let (head, tail) = remaining.split_at(last_space);
+            result.push(head.to_string());
+            remaining = tail.trim_start();
+        } else {
+            // No space found — hard-break at character boundary.
+            let char_end: usize = remaining
+                .chars()
+                .take(max_chars)
+                .map(|c| c.len_utf8())
+                .sum();
+            let (head, tail) = remaining.split_at(char_end);
+            result.push(head.to_string());
+            remaining = tail;
+        }
+    }
+
+    result
 }
 
 /// Metadata for the rebuilt PDF document.
