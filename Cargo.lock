@@ -544,6 +544,7 @@ name = "pdf-cleanroom"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "flate2",
  "lopdf 0.34.0",
  "printpdf",
  "regex",

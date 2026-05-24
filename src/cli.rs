@@ -8,6 +8,10 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Strategy {
     /// Rebuild a fresh PDF from extracted visible text only. Images are not preserved.
+    /// Render each page to an image and rebuild an image-only PDF.
+    /// Preserves visual appearance; removes selectable text. Does NOT mask
+    /// visible secrets in the rendered image.
+    FlattenRaster,
     TextOnly,
     /// Preserve visible content including images (partial — images are not yet sanitized).
     /// Warns about unsupported image sanitization.
@@ -17,9 +21,11 @@ pub enum Strategy {
 impl std::fmt::Display for Strategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::FlattenRaster => write!(f, "flatten-raster"),
             Self::TextOnly => write!(f, "text-only"),
             Self::FlattenVisible => write!(f, "flatten-visible"),
         }
+
     }
 }
 
@@ -59,6 +65,9 @@ pub struct Cli {
 
     /// Output strategy for sanitized PDFs.
     ///
+    /// - `flatten-raster` (experimental): render each page to an image and
+    ///   rebuild an image-only PDF.  Visually faithful; no selectable text.
+    ///   Does NOT mask visible secrets in the rendered image.
     /// - `text-only` (default): rebuild a fresh PDF from extracted visible text only.
     ///   Images and non-text content are not preserved.
     /// - `flatten-visible`: intended to preserve visible content including images.
