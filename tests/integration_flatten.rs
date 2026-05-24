@@ -147,6 +147,35 @@ fn flatten_visible_text_pdf() {
     // Normal text extraction must find zero secrets (image-only PDF)
     assert_normal_scan_finds_nothing(&flattened_bytes, "flattened");
 
+    // Structural check via lopdf: no Font objects, image XObject present
+    let doc = lopdf::Document::load(&output_pdf).expect("flattened PDF should load with lopdf");
+
+    let has_font_object = doc.objects.iter().any(|(_, obj)| {
+        obj.as_dict()
+            .ok()
+            .and_then(|d| d.get(b"Type").ok())
+            .and_then(|t| t.as_name_str().ok())
+            .is_some_and(|name| name == "Font")
+    });
+    assert!(
+        !has_font_object,
+        "flattened PDF should have no /Font objects (image-only PDF)"
+    );
+
+    let has_image_object = doc.objects.iter().any(|(_, obj)| {
+        obj.as_stream()
+            .ok()
+            .and_then(|s| s.dict.get(b"Subtype").ok())
+            .and_then(|t| t.as_name_str().ok())
+            .is_some_and(|name| name == "Image")
+    });
+    assert!(
+        has_image_object,
+        "flattened PDF should contain at least one /Image XObject"
+    );
+
+    eprintln!("  structural checks passed: no /Font objects, /Image XObject present.");
+
     // Clean up
     std::fs::remove_dir_all(&out_dir).ok();
 }

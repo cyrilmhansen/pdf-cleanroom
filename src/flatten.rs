@@ -23,9 +23,12 @@
 
 use std::fs;
 use std::io::BufWriter;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use flate2::write::ZlibEncoder;
+use flate2::Compression;
 use lopdf::{dictionary, Document, Object, Stream};
 
 /// Error type for flatten operations.
@@ -460,7 +463,14 @@ fn build_image_pdf(
             .copied()
             .unwrap_or((*img_w as f64 * 72.0 / 200.0, *img_h as f64 * 72.0 / 200.0));
 
-        // Image XObject — raw DeviceRGB pixels
+        // Image XObject — compressed DeviceRGB pixels (FlateDecode)
+        let compressed = {
+            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(data)
+                .map_err(|e| FlattenError::Io(e))?;
+            encoder.finish()
+                .map_err(|e| FlattenError::Io(e))?
+        };
         let image_id = doc.add_object(Stream::new(
             dictionary! {
                 "Type" => "XObject",
@@ -469,8 +479,9 @@ fn build_image_pdf(
                 "Height" => Object::from(*img_h as i64),
                 "ColorSpace" => "DeviceRGB",
                 "BitsPerComponent" => 8_i64,
+                "Filter" => "FlateDecode",
             },
-            data.clone(),
+            compressed,
         ));
 
         // Resources dict
