@@ -194,12 +194,16 @@ layer was preserved. Use structural tools such as `pdftotext`, `qpdf`, and
 
 **Important caveats:**
 - Selectable text is removed — the output contains only raster images.
-- Visible secrets in the rendered images are **NOT masked**.
+- Visible secrets in the rendered images remain visible unless manual pixel
+  masks are applied before the image is embedded into the output PDF.
 - Requires an external PDF renderer: `pdftoppm` (poppler-utils), `mutool`
   (mupdf-tools), or `gs` (ghostscript).
 - Without a renderer, the command fails with a clear error message.
 - Intermediate PPM files are written to `target/pdf-cleanroom-flatten/`
   (gitignored).
+- Manual pixel masks use rendered image pixel coordinates with a top-left
+  origin and are clipped to image bounds. They are currently exposed through
+  internal APIs/tests, not a production redaction CLI.
 
 
 ### Structural verification
@@ -231,12 +235,14 @@ Generates a synthetic PDF with known secrets, flattens it, and verifies:
 - Normal text extraction returns no text (image-only)
 - Output contains at least one image XObject and no Font objects
 - Obvious source secret bytes are not copied into the output PDF
+- Manual pixel masks mutate the embedded raster image before PDF rebuild
 - No mandatory dependencies added — normal `cargo test` is unaffected
 
 ### Limitations
 
-- **No pixel masking.** Secrets visible in the rendered image remain
-  visible. This strategy is a visual-flattening pass, not a redaction tool.
+- **Manual pixel masks only.** `flatten-raster` can black out explicit rendered
+  image pixel rectangles before embedding, but it does not yet detect OCR boxes
+  or PDF text bounding boxes automatically.
 - **No OCR.** The output has no hidden text layer.
 - **Renderer quality.** Visual fidelity depends on the external renderer's
   DPI and capabilities. 200 DPI is the default.

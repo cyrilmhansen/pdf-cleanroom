@@ -10,7 +10,7 @@
 /// - No selectable text (reduces exposure surface)
 /// - No source PDF objects copied (metadata, annotations, forms, JS, etc.)
 /// - Visual appearance preserved at the renderer's DPI (default 200)
-/// - Does **not** implement pixel masking — visible secrets remain in the image data
+/// - Manual pixel masks can black out rendered image regions before embedding
 ///
 /// # Limitations
 ///
@@ -20,16 +20,38 @@
 ///   from the rendered image dimensions at 200 DPI
 /// - Multi-byte text, unusual encodings, and transparency may not survive
 ///   rendering faithfully in all PDF viewers
-
 use std::fs;
 use std::io::BufWriter;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use lopdf::{dictionary, Document, Object, Stream};
+
+static FLATTEN_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A rectangular mask in rendered image pixel coordinates.
+///
+/// Coordinates are deliberately image-space for this first masking primitive:
+/// - `page` is 1-indexed.
+/// - `x` and `y` are pixel offsets from the rendered image's top-left corner.
+/// - `width` and `height` are pixel dimensions.
+/// - rectangles are clipped to image bounds before pixels are modified.
+///
+/// This avoids ambiguous PDF page-space mapping while establishing the safe
+/// redaction property: pixels are changed before they are embedded into the
+/// fresh output PDF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MaskRegion {
+    pub page: usize,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
 
 /// Error type for flatten operations.
 #[derive(Debug)]
@@ -39,18 +61,11 @@ pub enum FlattenError {
     /// I/O error during rendering or file operations.
     Io(std::io::Error),
     /// The renderer process failed.
-    Render {
-        tool: String,
-        detail: String,
-    },
+    Render { tool: String, detail: String },
     /// PDF load or structure error.
-    Pdf {
-        detail: String,
-    },
+    Pdf { detail: String },
     /// PPM parsing error.
-    Parse {
-        detail: String,
-    },
+    Parse { detail: String },
     /// Source PDF has no pages.
     PageCount,
 }
@@ -105,6 +120,54 @@ pub fn detect_renderer() -> Option<String> {
     None
 }
 
+/// Apply solid black rectangular masks for one page to a row-major RGB image buffer.
+///
+/// `pixels` must contain RGB triples (`width * height * 3` bytes). Regions use
+/// image pixel coordinates with a top-left origin and are clipped safely to the
+/// image bounds. Only masks whose `page` matches `page_num` are applied.
+/// Malformed buffers or zero-sized images are left unchanged.
+pub fn apply_pixel_masks(
+    pixels: &mut [u8],
+    image_width: u32,
+    image_height: u32,
+    page_num: usize,
+    masks: &[MaskRegion],
+) {
+    if image_width == 0 || image_height == 0 {
+        return;
+    }
+
+    let expected_len = image_width as usize * image_height as usize * 3;
+    if pixels.len() < expected_len {
+        return;
+    }
+
+    for mask in masks.iter().filter(|mask| mask.page == page_num) {
+        if mask.width == 0 || mask.height == 0 {
+            continue;
+        }
+
+        let x0 = mask.x.min(image_width);
+        let y0 = mask.y.min(image_height);
+        let x1 = mask.x.saturating_add(mask.width).min(image_width);
+        let y1 = mask.y.saturating_add(mask.height).min(image_height);
+
+        if x0 >= x1 || y0 >= y1 {
+            continue;
+        }
+
+        for y in y0..y1 {
+            let row_start = y as usize * image_width as usize * 3;
+            for x in x0..x1 {
+                let offset = row_start + x as usize * 3;
+                pixels[offset] = 0;
+                pixels[offset + 1] = 0;
+                pixels[offset + 2] = 0;
+            }
+        }
+    }
+}
+
 /// Flatten a PDF by rendering each page to an image and rebuilding an
 /// image-only PDF.
 ///
@@ -113,8 +176,6 @@ pub fn detect_renderer() -> Option<String> {
 /// * `input_path` — source PDF file path
 /// * `output_path` — destination image-only PDF file path
 /// * `renderer` — renderer name (`"pdftoppm"`, `"mutool"`, or `"gs"`)
-/// * `compression` — if true, FlateDecode-compress image streams (reduces
-///   output size but requires the `flate2` crate — currently a no-op)
 ///
 /// # Errors
 ///
@@ -126,11 +187,33 @@ pub fn flatten_pdf(
     output_path: &str,
     renderer: &str,
 ) -> Result<(), FlattenError> {
+    flatten_pdf_impl(input_path, output_path, renderer, &[])
+}
+
+/// Flatten a PDF and apply manual pixel masks before rebuilding the image-only PDF.
+///
+/// This is a low-level/manual API for tests and future redaction plumbing. It
+/// does not expose automatic detection and does not overlay rectangles on the
+/// source PDF; masks mutate the rendered RGB page image before embedding.
+pub fn flatten_pdf_with_masks(
+    input_path: &str,
+    output_path: &str,
+    renderer: &str,
+    masks: &[MaskRegion],
+) -> Result<(), FlattenError> {
+    flatten_pdf_impl(input_path, output_path, renderer, masks)
+}
+
+fn flatten_pdf_impl(
+    input_path: &str,
+    output_path: &str,
+    renderer: &str,
+    masks: &[MaskRegion],
+) -> Result<(), FlattenError> {
     // 1. Load source PDF to get page count and dimensions
-    let src_doc =
-        Document::load(input_path).map_err(|e| FlattenError::Pdf {
-            detail: format!("failed to load source PDF: {e}"),
-        })?;
+    let src_doc = Document::load(input_path).map_err(|e| FlattenError::Pdf {
+        detail: format!("failed to load source PDF: {e}"),
+    })?;
     let num_pages = src_doc.get_pages().len();
 
     if num_pages == 0 {
@@ -139,16 +222,22 @@ pub fn flatten_pdf(
 
     let page_dims = extract_page_dimensions(&src_doc, num_pages)?;
 
-    // 2. Create output directory for intermediate PPM files
-    let out_dir = PathBuf::from("target/pdf-cleanroom-flatten");
+    // 2. Create a unique output directory for intermediate PPM files. Tests can
+    // run flatten operations concurrently, so a shared directory is unsafe.
+    let out_dir = PathBuf::from("target/pdf-cleanroom-flatten").join(format!(
+        "{}-{}",
+        std::process::id(),
+        FLATTEN_TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
     fs::create_dir_all(&out_dir)?;
 
-    // 3. Render each page and collect image data
+    // 3. Render each page, optionally apply masks, and collect image data
     let mut pages: Vec<(u32, u32, Vec<u8>)> = Vec::with_capacity(num_pages);
 
     for page_num in 1..=num_pages {
         let ppm_path = render_single_page(renderer, input_path, page_num, &out_dir)?;
-        let (w, h, data) = parse_ppm(&ppm_path)?;
+        let (w, h, mut data) = parse_ppm(&ppm_path)?;
+        apply_pixel_masks(&mut data, w, h, page_num, masks);
         pages.push((w, h, data));
         // Clean up intermediate PPM
         fs::remove_file(&ppm_path).ok();
@@ -330,10 +419,9 @@ fn parse_ppm(path: &Path) -> Result<(u32, u32, Vec<u8>), FlattenError> {
             detail: "unexpected end of PPM dimensions line".into(),
         });
     }
-    let dim_line = std::str::from_utf8(&data[dim_start..pos])
-        .map_err(|_| FlattenError::Parse {
-            detail: "non-UTF-8 in PPM header".into(),
-        })?;
+    let dim_line = std::str::from_utf8(&data[dim_start..pos]).map_err(|_| FlattenError::Parse {
+        detail: "non-UTF-8 in PPM header".into(),
+    })?;
     let parts: Vec<&str> = dim_line.split_whitespace().collect();
     if parts.len() < 2 {
         return Err(FlattenError::Parse {
@@ -466,10 +554,8 @@ fn build_image_pdf(
         // Image XObject — compressed DeviceRGB pixels (FlateDecode)
         let compressed = {
             let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-            encoder.write_all(data)
-                .map_err(|e| FlattenError::Io(e))?;
-            encoder.finish()
-                .map_err(|e| FlattenError::Io(e))?
+            encoder.write_all(data).map_err(|e| FlattenError::Io(e))?;
+            encoder.finish().map_err(|e| FlattenError::Io(e))?
         };
         let image_id = doc.add_object(Stream::new(
             dictionary! {
@@ -492,10 +578,7 @@ fn build_image_pdf(
         });
 
         // Content stream — scale the image from unit square to fill page
-        let content = format!(
-            "q\n{:.2} 0 0 {:.2} 0 0 cm\n/Im0 Do\nQ\n",
-            page_w, page_h,
-        );
+        let content = format!("q\n{:.2} 0 0 {:.2} 0 0 cm\n/Im0 Do\nQ\n", page_w, page_h,);
         let content_id = doc.add_object(Stream::new(dictionary! {}, content.into_bytes()));
 
         // Page object
@@ -540,4 +623,89 @@ fn build_image_pdf(
         })?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rgb_at(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 3] {
+        let offset = (y as usize * width as usize + x as usize) * 3;
+        [pixels[offset], pixels[offset + 1], pixels[offset + 2]]
+    }
+
+    #[test]
+    fn apply_pixel_masks_blacks_inside_and_preserves_outside() {
+        let mut pixels = Vec::new();
+        for y in 0..4_u8 {
+            for x in 0..5_u8 {
+                pixels.extend_from_slice(&[x, y, 200]);
+            }
+        }
+        let original = pixels.clone();
+
+        apply_pixel_masks(
+            &mut pixels,
+            5,
+            4,
+            1,
+            &[MaskRegion {
+                page: 1,
+                x: 1,
+                y: 1,
+                width: 3,
+                height: 2,
+            }],
+        );
+
+        assert_eq!(rgb_at(&pixels, 5, 1, 1), [0, 0, 0]);
+        assert_eq!(rgb_at(&pixels, 5, 3, 2), [0, 0, 0]);
+        assert_eq!(rgb_at(&pixels, 5, 0, 1), rgb_at(&original, 5, 0, 1));
+        assert_eq!(rgb_at(&pixels, 5, 4, 2), rgb_at(&original, 5, 4, 2));
+        assert_eq!(rgb_at(&pixels, 5, 1, 3), rgb_at(&original, 5, 1, 3));
+    }
+
+    #[test]
+    fn apply_pixel_masks_clips_to_image_bounds() {
+        let mut pixels = vec![255_u8; 3 * 3 * 3];
+
+        apply_pixel_masks(
+            &mut pixels,
+            3,
+            3,
+            1,
+            &[MaskRegion {
+                page: 1,
+                x: 2,
+                y: 1,
+                width: 5,
+                height: 5,
+            }],
+        );
+
+        assert_eq!(rgb_at(&pixels, 3, 2, 1), [0, 0, 0]);
+        assert_eq!(rgb_at(&pixels, 3, 2, 2), [0, 0, 0]);
+        assert_eq!(rgb_at(&pixels, 3, 1, 1), [255, 255, 255]);
+        assert_eq!(rgb_at(&pixels, 3, 0, 2), [255, 255, 255]);
+    }
+    #[test]
+    fn apply_pixel_masks_ignores_other_pages() {
+        let mut pixels = vec![255_u8; 2 * 2 * 3];
+
+        apply_pixel_masks(
+            &mut pixels,
+            2,
+            2,
+            1,
+            &[MaskRegion {
+                page: 2,
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+            }],
+        );
+
+        assert!(pixels.iter().all(|channel| *channel == 255));
+    }
 }

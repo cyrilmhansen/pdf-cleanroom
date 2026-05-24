@@ -149,3 +149,9 @@
 - `tests/integration_flatten.rs` : test optionnel (PDF_CLEANROOM_FLATTEN_TESTS=1).
 - Norme `cargo test` : 68 tests passent (0 régression, 1 ignoré visuel).
 - README.md et DESIGN.md mis à jour.
+
+### 2026-05-24 — Pixel mask regions foundation
+- Ajout de `flatten::MaskRegion { page, x, y, width, height }` en coordonnées pixels de l'image rendue (origine haut-gauche).
+- Ajout de `apply_pixel_masks()` : rectangles noirs, clipping aux dimensions image, modification directe du buffer RGB avant embedding.
+- Ajout de `flatten_pdf_with_masks()` pour plomberie interne/tests sans CLI publique de rédaction.
+- Tests unitaires pixels + test d'intégration optionnel flatten-raster : PDF image-only, pas de texte extractible, stream image décodé avec pixels masqués vérifiés.
