@@ -4,14 +4,16 @@ use clap::{Parser, Subcommand, ValueEnum};
 /// Output strategy for sanitized PDFs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Strategy {
-    /// Rebuild a fresh PDF from extracted visible text only. Images are not preserved.
-    /// Render each page to an image and rebuild an image-only PDF.
-    /// Preserves visual appearance; removes selectable text. Does NOT mask
-    /// visible secrets in the rendered image.
+    /// Render each page to an image and rebuild an image-only PDF. Preserves
+    /// visual appearance and removes selectable text. Does NOT mask visible
+    /// secrets unless pixel mask regions are applied.
     FlattenRaster,
+    /// Rebuild a fresh PDF from extracted visible text only. Images and
+    /// non-text content are not preserved. Intended for text archival / AI
+    /// ingestion, not visual fidelity.
     TextOnly,
-    /// Preserve visible content including images (partial — images are not yet sanitized).
-    /// Warns about unsupported image sanitization.
+    /// Future/partial strategy intended to preserve visible content. Currently
+    /// incomplete; warns about unsupported image sanitization.
     FlattenVisible,
 }
 
@@ -32,9 +34,8 @@ impl std::fmt::Display for Strategy {
     disable_version_flag = true,
     long_about = "pdf-cleanroom scans PDF documents for secrets (emails, phone numbers, IBANs) \
                   and rebuilds a clean PDF with those secrets masked or removed.\n\n\
-                  ⚠ SECURITY WARNING: text-only rebuilds are not pixel redaction. \
-                  Embedded images and non-extracted text may still contain secrets. \
-                  flatten-raster can produce image-only output; manual pixel mask \
+                  ⚠ SECURITY WARNING: text-only is not pixel redaction. \
+                  flatten-raster creates image-only output. Manual pixel mask \
                   regions are experimental/internal plumbing."
 )]
 pub struct Cli {
@@ -64,15 +65,6 @@ pub struct Cli {
     pub mask: String,
 
     /// Output strategy for sanitized PDFs.
-    ///
-    /// - `flatten-raster` (experimental): render each page to an image and
-    ///   rebuild an image-only PDF.  Visually faithful; no selectable text.
-    ///   Manual pixel mask regions exist only in internal/test APIs for now.
-    /// - `text-only` (default): rebuild a fresh PDF from extracted visible text only.
-    ///   Images and non-text content are not preserved.
-    /// - `flatten-visible`: intended to preserve visible content including images.
-    ///   Currently partial — images are not yet sanitized. A warning is emitted
-    ///   when this strategy is selected.
     #[arg(long, default_value = "text-only", value_enum, global = true)]
     pub strategy: Strategy,
 }
