@@ -149,3 +149,8 @@
 - `tests/integration_flatten.rs` : test optionnel (PDF_CLEANROOM_FLATTEN_TESTS=1).
 - Norme `cargo test` : 68 tests passent (0 régression, 1 ignoré visuel).
 - README.md et DESIGN.md mis à jour.
+
+### 2026-05-24 — Auto pixel redaction foundation
+- Ajout de `--mask-detected` pour `--strategy flatten-raster rebuild` : dérive des masques depuis `pdftotext -bbox` puis noircit les pixels avant reconstruction image-only.
+- Couverture volontairement limitée à la couche texte PDF sélectionnable ; pas d'OCR, pas de détection dans les images/scans.
+- Tests synthétiques optionnels sous `PDF_CLEANROOM_FLATTEN_TESTS=1` pour vérifier PDF image-only, absence de texte extractible et pixels masqués.

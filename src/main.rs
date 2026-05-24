@@ -7,8 +7,6 @@ mod cli;
 use clap::Parser;
 use cli::{Cli, Command, Strategy};
 
-
-
 use pdf_cleanroom::{
     detect::Detector,
     mask::{self, MaskMode},
@@ -26,12 +24,22 @@ fn main() {
             input,
             output,
             report,
-        } => cmd_rebuild(input, output, report.as_deref(), mask_mode, &cli),
+            mask_detected,
+        } => cmd_rebuild(
+            input,
+            output,
+            report.as_deref(),
+            *mask_detected,
+            mask_mode,
+            &cli,
+        ),
         Command::Preserve { .. } => {
-            safety::check_preserve_not_implemented().map_err(|e| {
-                eprintln!("ERROR: {e}");
-                std::process::exit(1);
-            }).ok();
+            safety::check_preserve_not_implemented()
+                .map_err(|e| {
+                    eprintln!("ERROR: {e}");
+                    std::process::exit(1);
+                })
+                .ok();
             unreachable!()
         }
     };
@@ -91,29 +99,67 @@ fn cmd_rebuild(
     input: &str,
     output: &str,
     report_path: Option<&str>,
+    mask_detected: bool,
     mask_mode: MaskMode,
     cli: &Cli,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Early exit for flatten-raster: no text extraction, no detection, no masking.
+    // Early exit for flatten-raster: render page images and optionally apply
+    // automatic pixel masks derived from selectable PDF text coordinates.
     if cli.strategy == Strategy::FlattenRaster {
-        let renderer = pdf_cleanroom::flatten::detect_renderer()
-            .ok_or_else(|| {
-                let msg = "no PDF renderer found — install poppler-utils (pdftoppm), \
+        let renderer = pdf_cleanroom::flatten::detect_renderer().ok_or_else(|| {
+            let msg = "no PDF renderer found — install poppler-utils (pdftoppm), \
                            mupdf-tools (mutool), or ghostscript (gs)";
-                eprintln!("ERROR: --strategy flatten-raster requires an external PDF renderer.\n{msg}");
-                Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, msg))
-                    as Box<dyn std::error::Error>
-            })?;
-        pdf_cleanroom::flatten::flatten_pdf(input, output, &renderer)?;
+            eprintln!("ERROR: --strategy flatten-raster requires an external PDF renderer.\n{msg}");
+            Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, msg))
+                as Box<dyn std::error::Error>
+        })?;
+
+        let (mask_count, detected_count, unmapped_count) = if mask_detected {
+            let auto =
+                pdf_cleanroom::auto_redact::detect_text_masks(input, cli.unsafe_show_secrets)?;
+            let mask_count = auto.masks.len();
+            let detected_count = auto.report.total_secrets;
+            let unmapped_count = auto.unmapped_findings;
+
+            if let Some(path) = report_path {
+                let json = auto.report.to_json()?;
+                std::fs::write(path, &json)?;
+                eprintln!("Report written to {path}");
+            }
+
+            pdf_cleanroom::flatten::flatten_pdf_with_masks(input, output, &renderer, &auto.masks)?;
+            (mask_count, detected_count, unmapped_count)
+        } else {
+            pdf_cleanroom::flatten::flatten_pdf(input, output, &renderer)?;
+            (0, 0, 0)
+        };
+
         eprintln!(
             "flatten-raster complete: rendered {} page(s) to image-only PDF at {output}",
             pdf_extract::extract(input)?.num_pages,
         );
-        eprintln!(
-            "WARNING: Output is an image-only PDF. Text is not selectable. \
-             Visible secrets in the rendered image are NOT masked."
-        );
+
+        if mask_detected {
+            eprintln!(
+                "Automatic pixel masking: detected {detected_count} secret(s), applied {mask_count} mask region(s), unmapped {unmapped_count}."
+            );
+            eprintln!(
+                "WARNING: Automatic masking covers only secrets found in the selectable PDF text layer with coordinates. It does not detect secrets that exist only in raster images."
+            );
+        } else {
+            eprintln!(
+                "WARNING: Output is an image-only PDF. Text is not selectable. \
+                 Visible secrets in the rendered image are NOT masked."
+            );
+        }
         return Ok(());
+    }
+
+    if mask_detected {
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "--mask-detected is currently only supported with --strategy flatten-raster",
+        )));
     }
 
     // 1. Extract text from source PDF
@@ -145,14 +191,11 @@ fn cmd_rebuild(
         }
 
         // Apply masks to text
-        let cleaned_text: String = rebuild::apply_masks_to_text(&page.text, &detections, mask_mode).0;
-
+        let cleaned_text: String =
+            rebuild::apply_masks_to_text(&page.text, &detections, mask_mode).0;
 
         // Split into lines for rendering
-        let lines: Vec<String> = cleaned_text
-            .lines()
-            .map(|l| l.to_string())
-            .collect();
+        let lines: Vec<String> = cleaned_text.lines().map(|l| l.to_string()).collect();
 
         clean_pages.push(rebuild::CleanPage {
             page_num: page.page_num,
@@ -187,7 +230,6 @@ fn cmd_rebuild(
              Images from the source PDF are not preserved in the output."
         );
     }
-
 
     let metadata = rebuild::RebuildMetadata {
         title: format!("pdf-cleanroom — {}", input),

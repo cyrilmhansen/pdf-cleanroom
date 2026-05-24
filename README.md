@@ -184,7 +184,10 @@ fonts are baked into pixels) but produces output with no PDF text layer.
 
 ```sh
 # Basic flatten
-pdf-cleanroom rebuild input.pdf output.pdf --strategy flatten-raster
+pdf-cleanroom --strategy flatten-raster rebuild input.pdf output.pdf
+
+# Automatic visual redaction for selectable PDF text-layer secrets
+pdf-cleanroom --strategy flatten-raster rebuild input.pdf output.pdf --mask-detected
 ```
 
 Some viewers, especially browser PDF viewers, may offer OCR-like visual
@@ -194,10 +197,14 @@ layer was preserved. Use structural tools such as `pdftotext`, `qpdf`, and
 
 **Important caveats:**
 - Selectable text is removed — the output contains only raster images.
-- Visible secrets in the rendered images are **NOT masked**.
+- With `--mask-detected`, secrets found in the selectable PDF text layer via
+  `pdftotext -bbox` are converted to pixel masks before the image is embedded.
+- Secrets that exist only inside raster images/scans are not detected without
+  OCR.
 - Requires an external PDF renderer: `pdftoppm` (poppler-utils), `mutool`
   (mupdf-tools), or `gs` (ghostscript).
-- Without a renderer, the command fails with a clear error message.
+- `--mask-detected` additionally requires Poppler `pdftotext -bbox`.
+- Without required external tools, the command fails with a clear error message.
 - Intermediate PPM files are written to `target/pdf-cleanroom-flatten/`
   (gitignored).
 
@@ -235,9 +242,10 @@ Generates a synthetic PDF with known secrets, flattens it, and verifies:
 
 ### Limitations
 
-- **No pixel masking.** Secrets visible in the rendered image remain
-  visible. This strategy is a visual-flattening pass, not a redaction tool.
-- **No OCR.** The output has no hidden text layer.
+- **Automatic masking scope.** `--mask-detected` covers only secrets found in
+  the PDF text layer with Poppler word coordinates. It does not detect secrets
+  that exist only in raster images unless OCR is added later.
+- **No hidden text layer.** The output has no hidden OCR text layer.
 - **Renderer quality.** Visual fidelity depends on the external renderer's
   DPI and capabilities. 200 DPI is the default.
 - **Page dimensions.** Output page dimensions approximate the source via

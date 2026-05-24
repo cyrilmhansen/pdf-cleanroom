@@ -1,20 +1,19 @@
 /// CLI module — argument parsing with clap.
-
 use clap::{Parser, Subcommand, ValueEnum};
-
-
 
 /// Output strategy for sanitized PDFs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Strategy {
-    /// Rebuild a fresh PDF from extracted visible text only. Images are not preserved.
-    /// Render each page to an image and rebuild an image-only PDF.
-    /// Preserves visual appearance; removes selectable text. Does NOT mask
-    /// visible secrets in the rendered image.
+    /// Render each page to an image and rebuild an image-only PDF. Preserves
+    /// visual appearance and removes selectable text. Does NOT mask visible
+    /// secrets unless pixel mask regions are applied.
     FlattenRaster,
+    /// Rebuild a fresh PDF from extracted visible text only. Images and
+    /// non-text content are not preserved. Intended for text archival / AI
+    /// ingestion, not visual fidelity.
     TextOnly,
-    /// Preserve visible content including images (partial — images are not yet sanitized).
-    /// Warns about unsupported image sanitization.
+    /// Future/partial strategy intended to preserve visible content. Currently
+    /// incomplete; warns about unsupported image sanitization.
     FlattenVisible,
 }
 
@@ -25,10 +24,8 @@ impl std::fmt::Display for Strategy {
             Self::TextOnly => write!(f, "text-only"),
             Self::FlattenVisible => write!(f, "flatten-visible"),
         }
-
     }
 }
-
 
 #[derive(Parser)]
 #[command(
@@ -36,10 +33,9 @@ impl std::fmt::Display for Strategy {
     about = "PDF document sanitization — detect and remove secrets from PDF files",
     long_about = "pdf-cleanroom scans PDF documents for secrets (emails, phone numbers, IBANs) \
                   and rebuilds a clean PDF with those secrets masked or removed.\n\n\
-                  ⚠ SECURITY WARNING: pdf-cleanroom rebuilds the PDF from extracted text. \
-                  It does NOT perform pixel-level redaction. Embedded images, annotations, \
-                  and non-extracted text may still contain secrets. This tool reduces \
-                  exposure but does not guarantee complete sanitization."
+                  ⚠ SECURITY WARNING: text-only is not pixel redaction. \
+                  flatten-raster creates image-only output. Automatic pixel masks \
+                  cover only selectable PDF text-layer secrets; no OCR is used."
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -64,21 +60,7 @@ pub struct Cli {
     pub mask: String,
 
     /// Output strategy for sanitized PDFs.
-    ///
-    /// - `flatten-raster` (experimental): render each page to an image and
-    ///   rebuild an image-only PDF.  Visually faithful; no selectable text.
-    ///   Does NOT mask visible secrets in the rendered image.
-    /// - `text-only` (default): rebuild a fresh PDF from extracted visible text only.
-    ///   Images and non-text content are not preserved.
-    /// - `flatten-visible`: intended to preserve visible content including images.
-    ///   Currently partial — images are not yet sanitized. A warning is emitted
-    ///   when this strategy is selected.
-    #[arg(
-        long,
-        default_value = "text-only",
-        value_enum,
-        global = true
-    )]
+    #[arg(long, default_value = "text-only", value_enum, global = true)]
     pub strategy: Strategy,
 }
 
@@ -108,6 +90,7 @@ pub enum Command {
     ///     pdf-cleanroom rebuild input.pdf output.pdf
     ///     pdf-cleanroom rebuild input.pdf output.pdf --mask label
     ///     pdf-cleanroom rebuild input.pdf output.pdf --report report.json
+    ///     pdf-cleanroom --strategy flatten-raster rebuild input.pdf output.pdf --mask-detected
     Rebuild {
         /// Input PDF file path.
         input: String,
@@ -118,6 +101,13 @@ pub enum Command {
         /// Path to write the JSON report.
         #[arg(long)]
         report: Option<String>,
+
+        /// Automatically derive pixel mask regions from selectable PDF text coordinates.
+        ///
+        /// Only valid with `--strategy flatten-raster`. Requires Poppler
+        /// `pdftotext -bbox`; does not OCR images.
+        #[arg(long = "mask-detected")]
+        mask_detected: bool,
     },
 
     /// Preserve fidelity mode (NOT IMPLEMENTED).

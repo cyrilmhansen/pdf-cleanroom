@@ -27,11 +27,15 @@ Extraire le texte visible d'un PDF, détecter les secrets (email, téléphone FR
 L'utilisateur choisit une stratégie via `--strategy` :
 
 - `text-only` (défaut) : reconstruit un PDF neuf à partir du seul texte visible extrait. Les images, annotations, formulaires et métadonnées source ne sont pas copiés. C'est le comportement MVP.
-- `flatten-raster` (expérimental) : rend chaque page en image raster (PPM) via un renderer externe (pdftoppm/mutool/gs), puis reconstruit un PDF image-only. Préserve l'apparence visuelle, supprime le texte sélectionnable. Les secrets visibles dans l'image restent VISIBLES — pas de masquage pixel.
+- `flatten-raster` (expérimental) : rend chaque page en image raster (PPM) via un renderer externe (pdftoppm/mutool/gs), puis reconstruit un PDF image-only. Avec `--mask-detected`, `pdftotext -bbox` fournit les mots positionnés, les secrets détectés dans la couche texte PDF deviennent des rectangles de masquage, puis les pixels sont noircis avant embedding. Les secrets uniquement présents dans les images ne sont pas détectés sans OCR.
 - `flatten-visible` : destiné à préserver le contenu visible utile (images, mise en page) à l'avenir. Actuellement partiel — les images ne sont pas encore sanitisées. Un avertissement est émis à l'utilisation.
 - `preserve` (non implémenté) : refus explicite — ne sera jamais simulé par superposition de rectangles.
 
 Quelle que soit la stratégie, le rebuilt crée toujours un document printpdf indépendant ; il ne copie jamais la structure source.
+
+## Masquage automatique flatten-raster
+
+Pipeline : `pdftotext -bbox` → mots positionnés → détection regex (email/téléphone/IBAN, y compris téléphone/IBAN espacés) → union des boîtes de mots → `MaskRegion` en coordonnées page top-left → conversion en pixels rendus → rectangles noirs dans le buffer RGB → PDF image-only neuf. Aucune couche texte ni objet source n'est copié.
 
 ## Architecture
 ```
